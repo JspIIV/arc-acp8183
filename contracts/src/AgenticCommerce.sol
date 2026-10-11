@@ -9,105 +9,109 @@ import "./interfaces/IACP.sol";
 
 // ---------------------------------------------------------------------------
 // AgenticCommerce — faithful ERC-8183 implementation
-// Target: Arc Mainnet (chain 5042)
-// USDC: 0x3600000000000000000000000000000000000000 (6 decimals)
+//
+// Spec:  https://eips.ethereum.org/EIPS/eip-8183
+// Ref:   0x0747EEf0706327138c69792bF28Cd525089e4583 (Arc Testnet)
+//
+// Changes vs first draft aligned to the reference implementation:
+//   • submit: bytes32 deliverable  (spec §submit)
+//   • complete/reject: bytes32 reason  (spec §complete, §reject)
+//   • setPlatformFee(feeBP_, treasury_) two-arg  (spec §fees, ref impl)
+//   • setBudget: provider-only  (ref impl — client+provider allowed by spec
+//     but reference restricts to provider; we match the reference)
+//   • Events: JobFunded(jobId, client, amount), JobSubmitted(jobId, provider, deliverable),
+//             JobCompleted(jobId, evaluator, reason), JobRejected(jobId, rejector, reason)
+//   • Step 3: hooks receive optParams, not msg.data
+//   • Step 5: combined fee cap 20%, dead _isEscrowed removed, initialize cleaned up
 // ---------------------------------------------------------------------------
-contract AgenticCommerce is ReentrancyGuard, Ownable2Step {
+contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     using SafeERC20 for IERC20;
 
-    // ── State machine ────────────────────────────────────────────────────────
-    enum JobStatus { Open, Funded, Submitted, Completed, Rejected, Expired }
-
-    // ── Job data ─────────────────────────────────────────────────────────────
-    struct Job {
-        uint256 id;
-        address client;
-        address provider;
-        address evaluator;
-        string  description;
-        uint256 budget;
-        uint256 expiredAt;
-        JobStatus status;
-        address hook;          // address(0) = no hook
-    }
-
-    // ── Fee config ────────────────────────────────────────────────────────────
+    // ── Storage ──────────────────────────────────────────────────────────────
     IERC20  public immutable paymentToken;
-    address public treasury;
+    address public           treasury;
 
-    uint256 public platformFeeBps;    // e.g. 200 = 2 %
-    uint256 public evaluatorFeeBps;   // e.g. 100 = 1 %
-    uint256 public constant BPS_DENOM = 10_000;
+    uint256 public platformFeeBps;    // platform fee in basis points
+    uint256 public evaluatorFeeBps;   // evaluator fee in basis points
 
-    // hook whitelist — address(0) key = "no hook" is always allowed
+    uint256 public constant BPS_DENOM     = 10_000;
+    uint256 public constant MAX_FEE_BPS   = 2_000;  // Step 5: combined cap 20%
+
+    mapping(uint256 => Job) private _jobs;
+    uint256 public jobCount;
+
     mapping(address => bool) public hookWhitelist;
 
-    // ── Storage ───────────────────────────────────────────────────────────────
-    uint256 private _jobCounter;
-    mapping(uint256 => Job) private _jobs;
-
-    // ── Errors ────────────────────────────────────────────────────────────────
-    error ZeroAddress();
-    error InvalidExpiry();
+    // ── Errors ───────────────────────────────────────────────────────────────
+    error WrongStatus(JobStatus expected, JobStatus actual);
     error NotClient();
     error NotProvider();
     error NotEvaluator();
-    error WrongStatus(JobStatus expected, JobStatus actual);
     error ProviderNotSet();
+    error ProviderAlreadySet();
     error BudgetZero();
     error BudgetMoved(uint256 expected, uint256 actual);
-    error HookNotWhitelisted(address hook);
-    error FeesTooHigh();
-    error JobExpiredAlready();
+    error InvalidExpiry();
     error NotExpiredYet();
-    error ProviderAlreadySet();
+    error JobExpiredAlready();
+    error HookNotWhitelisted(address hook);
+    error ZeroAddress();
+    error FeesTooHigh();
 
-    // ── Events ─────────────────────────────────────────────────────────────────
-    event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider, address evaluator, uint256 expiredAt, address hook);
+    // ── Events (ERC-8183 §Events — matched to reference implementation) ──────
+    event JobCreated(
+        uint256 indexed jobId,
+        address indexed client,
+        address indexed provider,
+        address evaluator,
+        uint256 expiredAt,
+        address hook
+    );
     event ProviderSet(uint256 indexed jobId, address indexed provider);
     event BudgetSet(uint256 indexed jobId, uint256 amount);
-    event JobFunded(uint256 indexed jobId, uint256 amount);
-    event JobSubmitted(uint256 indexed jobId, bytes deliverable);
-    event JobCompleted(uint256 indexed jobId, string reason);
-    event JobRejected(uint256 indexed jobId, string reason);
+    event JobFunded(uint256 indexed jobId, address indexed client, uint256 amount);
+    event JobSubmitted(uint256 indexed jobId, address indexed provider, bytes32 deliverable);
+    event JobCompleted(uint256 indexed jobId, address indexed evaluator, bytes32 reason);
+    event JobRejected(uint256 indexed jobId, address indexed rejector, bytes32 reason);
     event JobExpired(uint256 indexed jobId);
     event PaymentReleased(uint256 indexed jobId, address indexed provider, uint256 amount);
     event EvaluatorFeePaid(uint256 indexed jobId, address indexed evaluator, uint256 amount);
     event Refunded(uint256 indexed jobId, address indexed client, uint256 amount);
     event HookWhitelistUpdated(address indexed hook, bool allowed);
+    event TreasurySet(address treasury);
     event PlatformFeeSet(uint256 bps);
     event EvaluatorFeeSet(uint256 bps);
-    event TreasurySet(address treasury);
 
     // ── Constructor ──────────────────────────────────────────────────────────
-    /// @param paymentToken_   ERC-20 used for all escrow (USDC on Arc Mainnet)
-    /// @param treasury_       Receives platform fees; also the initial owner
     constructor(address paymentToken_, address treasury_) Ownable(msg.sender) {
         if (paymentToken_ == address(0) || treasury_ == address(0)) revert ZeroAddress();
         paymentToken = IERC20(paymentToken_);
         treasury     = treasury_;
-        // address(0) = "no hook" is implicitly whitelisted
+        // address(0) hook is always allowed (no-hook path)
         hookWhitelist[address(0)] = true;
     }
 
     // ── Admin ────────────────────────────────────────────────────────────────
-    function initialize(address paymentToken_, address treasury_) external pure {
-        // Kept for interface compatibility with ERC-1967 proxy deployments.
-        // This non-proxy version uses the constructor; callers should not call this.
-        revert("use constructor");
-        (paymentToken_, treasury_); // suppress warnings
-    }
 
-    function setPlatformFee(uint256 bps) external onlyOwner {
-        if (bps + evaluatorFeeBps > BPS_DENOM) revert FeesTooHigh();
-        platformFeeBps = bps;
-        emit PlatformFeeSet(bps);
+    /// @notice Set platform fee and treasury (ERC-8183 ref: setPlatformFee(feeBP_, treasury_))
+    function setPlatformFee(uint256 feeBP_, address treasury_) external onlyOwner {
+        if (treasury_ == address(0)) revert ZeroAddress();
+        if (feeBP_ + evaluatorFeeBps > MAX_FEE_BPS) revert FeesTooHigh();
+        platformFeeBps = feeBP_;
+        treasury = treasury_;
+        emit PlatformFeeSet(feeBP_);
+        emit TreasurySet(treasury_);
     }
 
     function setEvaluatorFee(uint256 bps) external onlyOwner {
-        if (bps + platformFeeBps > BPS_DENOM) revert FeesTooHigh();
+        if (bps + platformFeeBps > MAX_FEE_BPS) revert FeesTooHigh();
         evaluatorFeeBps = bps;
         emit EvaluatorFeeSet(bps);
+    }
+
+    function setHookWhitelist(address hook, bool allowed) external onlyOwner {
+        hookWhitelist[hook] = allowed;
+        emit HookWhitelistUpdated(hook, allowed);
     }
 
     function setTreasury(address treasury_) external onlyOwner {
@@ -116,15 +120,20 @@ contract AgenticCommerce is ReentrancyGuard, Ownable2Step {
         emit TreasurySet(treasury_);
     }
 
-    function setHookWhitelist(address hook, bool allowed) external onlyOwner {
-        hookWhitelist[hook] = allowed;
-        emit HookWhitelistUpdated(hook, allowed);
+    // ── Fee view ─────────────────────────────────────────────────────────────
+
+    /// @notice Preview fee split for a given budget.
+    function feeSplit(uint256 budget) external view returns (
+        uint256 platformFee, uint256 evaluatorFee, uint256 providerPay
+    ) {
+        platformFee  = (budget * platformFeeBps)  / BPS_DENOM;
+        evaluatorFee = (budget * evaluatorFeeBps) / BPS_DENOM;
+        providerPay  = budget - platformFee - evaluatorFee;
     }
 
-    // ── Core: createJob ──────────────────────────────────────────────────────
-    /// @dev ERC-8183 §createJob
-    ///      provider MAY be address(0); evaluator MUST be non-zero;
-    ///      expiredAt MUST be in the future; hook MUST be whitelisted or zero.
+    // ── Core lifecycle ───────────────────────────────────────────────────────
+
+    /// @notice Create a new job. provider may be address(0) for later assignment.
     function createJob(
         address provider,
         address evaluator,
@@ -136,120 +145,111 @@ contract AgenticCommerce is ReentrancyGuard, Ownable2Step {
         if (expiredAt <= block.timestamp) revert InvalidExpiry();
         if (!hookWhitelist[hook]) revert HookNotWhitelisted(hook);
 
-        jobId = ++_jobCounter;
+        jobId = ++jobCount;
         _jobs[jobId] = Job({
-            id:          jobId,
-            client:      msg.sender,
-            provider:    provider,
-            evaluator:   evaluator,
+            id:        jobId,
+            client:    msg.sender,
+            provider:  provider,
+            evaluator: evaluator,
             description: description,
-            budget:      0,
-            expiredAt:   expiredAt,
-            status:      JobStatus.Open,
-            hook:        hook
+            budget:    0,
+            expiredAt: expiredAt,
+            status:    JobStatus.Open,
+            hook:      hook
         });
 
         emit JobCreated(jobId, msg.sender, provider, evaluator, expiredAt, hook);
     }
 
-    // ── Core: setProvider ────────────────────────────────────────────────────
-    /// @dev ERC-8183 §setProvider  — client only; job must be Open with provider==0
+    /// @notice Client sets or changes the provider while the job is Open and provider is not yet set.
     function setProvider(uint256 jobId, address provider, bytes calldata optParams) external {
         Job storage job = _requireJob(jobId);
-        if (msg.sender != job.client) revert NotClient();
         _requireStatus(job, JobStatus.Open);
+        if (msg.sender != job.client) revert NotClient();
         if (job.provider != address(0)) revert ProviderAlreadySet();
         if (provider == address(0)) revert ZeroAddress();
-
-        _hookBefore(job, AgenticCommerce.setProvider.selector, msg.data);
         job.provider = provider;
+        _hookBefore(job.hook, jobId, msg.sig, optParams);
         emit ProviderSet(jobId, provider);
-        _hookAfter(job, AgenticCommerce.setProvider.selector, optParams);
+        _hookAfter(job.hook, jobId, msg.sig, optParams);
     }
 
-    // ── Core: setBudget ──────────────────────────────────────────────────────
-    /// @dev ERC-8183 §setBudget  — client or provider; job must be Open
-    function setBudget(uint256 jobId, uint256 amount, bytes calldata optParams) external {
+    /// @notice Provider sets the budget (ERC-8183: provider-only per reference impl).
+    function setBudget(uint256 jobId, uint256 amount, bytes calldata optParams) external nonReentrant {
         Job storage job = _requireJob(jobId);
-        if (msg.sender != job.client && msg.sender != job.provider) revert NotClient();
         _requireStatus(job, JobStatus.Open);
-
-        _hookBefore(job, AgenticCommerce.setBudget.selector, msg.data);
+        if (msg.sender != job.provider) revert NotProvider();
+        _hookBefore(job.hook, jobId, msg.sig, optParams);
         job.budget = amount;
         emit BudgetSet(jobId, amount);
-        _hookAfter(job, AgenticCommerce.setBudget.selector, optParams);
+        _hookAfter(job.hook, jobId, msg.sig, optParams);
     }
 
-    // ── Core: fund ───────────────────────────────────────────────────────────
-    /// @dev ERC-8183 §fund
-    ///      optParams: if non-empty, abi.decode as uint256 expectedBudget —
-    ///      reverts with BudgetMoved when it doesn't match (front-run guard).
+    /// @notice Client funds escrow.
+    ///         optParams (optional): if non-empty, abi.decode as uint256 expectedBudget.
+    ///         If expectedBudget != job.budget, reverts with BudgetMoved.
     function fund(uint256 jobId, bytes calldata optParams) external nonReentrant {
         Job storage job = _requireJob(jobId);
-        if (msg.sender != job.client) revert NotClient();
         _requireStatus(job, JobStatus.Open);
+        if (msg.sender != job.client) revert NotClient();
         if (job.provider == address(0)) revert ProviderNotSet();
         if (job.budget == 0) revert BudgetZero();
         if (block.timestamp >= job.expiredAt) revert JobExpiredAlready();
 
-        // Optional front-run guard
+        // BudgetMoved guard: decode expected budget from optParams if provided
         if (optParams.length > 0) {
             uint256 expectedBudget = abi.decode(optParams, (uint256));
             if (expectedBudget != job.budget) revert BudgetMoved(expectedBudget, job.budget);
         }
 
-        _hookBefore(job, AgenticCommerce.fund.selector, msg.data);
+        _hookBefore(job.hook, jobId, msg.sig, optParams);
         job.status = JobStatus.Funded;
         paymentToken.safeTransferFrom(msg.sender, address(this), job.budget);
-        emit JobFunded(jobId, job.budget);
-        _hookAfter(job, AgenticCommerce.fund.selector, optParams);
+        emit JobFunded(jobId, msg.sender, job.budget);
+        _hookAfter(job.hook, jobId, msg.sig, optParams);
     }
 
-    // ── Core: submit ─────────────────────────────────────────────────────────
-    /// @dev ERC-8183 §submit — provider only; job must be Funded
-    function submit(uint256 jobId, bytes calldata deliverable, bytes calldata optParams) external {
+    /// @notice Provider submits deliverable. deliverable is bytes32 per ERC-8183 spec.
+    function submit(uint256 jobId, bytes32 deliverable, bytes calldata optParams) external nonReentrant {
         Job storage job = _requireJob(jobId);
-        if (msg.sender != job.provider) revert NotProvider();
         _requireStatus(job, JobStatus.Funded);
-
-        _hookBefore(job, AgenticCommerce.submit.selector, msg.data);
+        if (msg.sender != job.provider) revert NotProvider();
+        _hookBefore(job.hook, jobId, msg.sig, optParams);
         job.status = JobStatus.Submitted;
-        emit JobSubmitted(jobId, deliverable);
-        _hookAfter(job, AgenticCommerce.submit.selector, optParams);
+        emit JobSubmitted(jobId, msg.sender, deliverable);
+        _hookAfter(job.hook, jobId, msg.sig, optParams);
     }
 
-    // ── Core: complete ───────────────────────────────────────────────────────
-    /// @dev ERC-8183 §complete — evaluator only; job must be Submitted
-    function complete(uint256 jobId, string calldata reason, bytes calldata optParams)
-        external
-        nonReentrant
-    {
+    /// @notice Evaluator completes a Submitted job. reason is bytes32 per ERC-8183 spec.
+    function complete(uint256 jobId, bytes32 reason, bytes calldata optParams) external nonReentrant {
         Job storage job = _requireJob(jobId);
-        if (msg.sender != job.evaluator) revert NotEvaluator();
         _requireStatus(job, JobStatus.Submitted);
+        if (msg.sender != job.evaluator) revert NotEvaluator();
 
-        _hookBefore(job, AgenticCommerce.complete.selector, msg.data);
+        _hookBefore(job.hook, jobId, msg.sig, optParams);
         job.status = JobStatus.Completed;
 
-        (uint256 platformFee, uint256 evaluatorFee, uint256 providerPay) = _splitBudget(job.budget);
-        if (platformFee > 0) paymentToken.safeTransfer(treasury, platformFee);
-        if (evaluatorFee > 0) paymentToken.safeTransfer(job.evaluator, evaluatorFee);
-        paymentToken.safeTransfer(job.provider, providerPay);
+        uint256 budget       = job.budget;
+        uint256 platformFee  = (budget * platformFeeBps)  / BPS_DENOM;
+        uint256 evaluatorFee = (budget * evaluatorFeeBps) / BPS_DENOM;
+        uint256 providerPay  = budget - platformFee - evaluatorFee;
 
-        emit EvaluatorFeePaid(jobId, job.evaluator, evaluatorFee);
-        emit PaymentReleased(jobId, job.provider, providerPay);
-        emit JobCompleted(jobId, reason);
-        _hookAfter(job, AgenticCommerce.complete.selector, optParams);
+        if (platformFee  > 0) paymentToken.safeTransfer(treasury,       platformFee);
+        if (evaluatorFee > 0) {
+            paymentToken.safeTransfer(job.evaluator, evaluatorFee);
+            emit EvaluatorFeePaid(jobId, job.evaluator, evaluatorFee);
+        }
+        if (providerPay  > 0) {
+            paymentToken.safeTransfer(job.provider, providerPay);
+            emit PaymentReleased(jobId, job.provider, providerPay);
+        }
+
+        emit JobCompleted(jobId, msg.sender, reason);
+        _hookAfter(job.hook, jobId, msg.sig, optParams);
     }
 
-    // ── Core: reject ─────────────────────────────────────────────────────────
-    /// @dev ERC-8183 §reject
-    ///      — client may reject when Open
-    ///      — evaluator may reject when Funded or Submitted
-    function reject(uint256 jobId, string calldata reason, bytes calldata optParams)
-        external
-        nonReentrant
-    {
+    /// @notice Reject a job. Evaluator may reject Funded or Submitted; client may reject Open.
+    function reject(uint256 jobId, bytes32 reason, bytes calldata optParams) external nonReentrant {
         Job storage job = _requireJob(jobId);
 
         if (job.status == JobStatus.Open) {
@@ -260,25 +260,22 @@ contract AgenticCommerce is ReentrancyGuard, Ownable2Step {
             revert WrongStatus(JobStatus.Open, job.status);
         }
 
-        // Capture whether funds are escrowed BEFORE we change status
-        bool hadEscrow = (job.status == JobStatus.Funded || job.status == JobStatus.Submitted);
+        _hookBefore(job.hook, jobId, msg.sig, optParams);
 
-        _hookBefore(job, AgenticCommerce.reject.selector, msg.data);
+        JobStatus prev = job.status;
         job.status = JobStatus.Rejected;
 
-        // Refund escrow if budget was locked
-        if (hadEscrow && job.budget > 0) {
+        if (prev == JobStatus.Funded || prev == JobStatus.Submitted) {
             paymentToken.safeTransfer(job.client, job.budget);
             emit Refunded(jobId, job.client, job.budget);
         }
 
-        emit JobRejected(jobId, reason);
-        _hookAfter(job, AgenticCommerce.reject.selector, optParams);
+        emit JobRejected(jobId, msg.sender, reason);
+        _hookAfter(job.hook, jobId, msg.sig, optParams);
     }
 
-    // ── Core: claimRefund ────────────────────────────────────────────────────
-    /// @dev ERC-8183 §claimRefund — anyone; job must be Funded or Submitted; expiredAt must have passed.
-    ///      DELIBERATELY does NOT call hooks — this is the irrevocable escape hatch.
+    /// @notice Anyone may claim refund after expiredAt on Funded or Submitted jobs.
+    ///         MUST NOT call hooks — this is the escape hatch. No extension may block it.
     function claimRefund(uint256 jobId) external nonReentrant {
         Job storage job = _requireJob(jobId);
         if (job.status != JobStatus.Funded && job.status != JobStatus.Submitted) {
@@ -287,69 +284,40 @@ contract AgenticCommerce is ReentrancyGuard, Ownable2Step {
         if (block.timestamp < job.expiredAt) revert NotExpiredYet();
 
         job.status = JobStatus.Expired;
-        uint256 escrow = job.budget;
-        paymentToken.safeTransfer(job.client, escrow);
+        paymentToken.safeTransfer(job.client, job.budget);
+        emit Refunded(jobId, job.client, job.budget);
         emit JobExpired(jobId);
-        emit Refunded(jobId, job.client, escrow);
+        // NOTE: no hook calls here — intentional per ERC-8183 spec
     }
 
-    // ── View ──────────────────────────────────────────────────────────────────
+    // ── View ─────────────────────────────────────────────────────────────────
+
     function getJob(uint256 jobId) external view returns (Job memory) {
-        return _requireJob(jobId);
+        return _jobs[jobId];
     }
 
-    function jobCount() external view returns (uint256) {
-        return _jobCounter;
-    }
+    // ── Internals ────────────────────────────────────────────────────────────
 
-    function feeSplit(uint256 budget)
-        external
-        view
-        returns (uint256 platformFee, uint256 evaluatorFee, uint256 providerPay)
-    {
-        return _splitBudget(budget);
-    }
-
-    // ── Internal helpers ──────────────────────────────────────────────────────
     function _requireJob(uint256 jobId) internal view returns (Job storage job) {
         job = _jobs[jobId];
-        require(job.id != 0, "unknown job");
+        require(job.id != 0, "InvalidJob");
     }
 
     function _requireStatus(Job storage job, JobStatus expected) internal view {
         if (job.status != expected) revert WrongStatus(expected, job.status);
     }
 
-    /// Returns true when the budget is currently held in escrow
-    function _isEscrowed(Job storage job) internal view returns (bool) {
-        JobStatus s = job.status;
-        // After reject is called the status is already Rejected here,
-        // but we need to know whether funds were escrowed before the call.
-        // We track this via the original status passed to reject(), so we
-        // always refund when called from reject on Funded/Submitted.
-        // For direct _isEscrowed checks (outside reject) we use status.
-        return s == JobStatus.Funded || s == JobStatus.Submitted || s == JobStatus.Rejected;
-    }
-
-    function _splitBudget(uint256 budget)
-        internal
-        view
-        returns (uint256 platformFee, uint256 evaluatorFee, uint256 providerPay)
-    {
-        platformFee  = (budget * platformFeeBps)  / BPS_DENOM;
-        evaluatorFee = (budget * evaluatorFeeBps) / BPS_DENOM;
-        providerPay  = budget - platformFee - evaluatorFee;
-    }
-
-    function _hookBefore(Job storage job, bytes4 selector, bytes calldata data) internal {
-        if (job.hook != address(0)) {
-            IACPHook(job.hook).beforeAction(job.id, selector, data);
+    /// @dev Hook before — passes optParams (Step 3: consistent with afterAction)
+    function _hookBefore(address hook, uint256 jobId, bytes4 selector, bytes calldata optParams) internal {
+        if (hook != address(0)) {
+            IACPHook(hook).beforeAction(jobId, selector, optParams);
         }
     }
 
-    function _hookAfter(Job storage job, bytes4 selector, bytes calldata data) internal {
-        if (job.hook != address(0)) {
-            IACPHook(job.hook).afterAction(job.id, selector, data);
+    /// @dev Hook after — passes optParams (Step 3: consistent with beforeAction)
+    function _hookAfter(address hook, uint256 jobId, bytes4 selector, bytes calldata optParams) internal {
+        if (hook != address(0)) {
+            IACPHook(hook).afterAction(jobId, selector, optParams);
         }
     }
 }

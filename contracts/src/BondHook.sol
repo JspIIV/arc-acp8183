@@ -7,7 +7,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable2Step.sol";
 import "./interfaces/IACP.sol";
 
-// ERC-8004 ReputationRegistry — real ABI from deployed registries
+// ERC-8004 ReputationRegistry
 interface IReputationRegistry {
     function giveFeedback(
         uint256 agentId,
@@ -21,17 +21,21 @@ interface IReputationRegistry {
     ) external;
 }
 
-// ERC-8004 IdentityRegistry — ownerOf to look up agentId from address
+// ERC-8004 IdentityRegistry
 interface IIdentityRegistry {
     function ownerOf(uint256 tokenId) external view returns (address);
 }
 
 // ---------------------------------------------------------------------------
-// BondHook — implements IACPHook
-// Providers pre-stake USDC collateral. On submit, 50% of budget is locked.
-// On complete: bond released, positive feedback.
-// On reject:  bond sent to client, negative feedback.
-// Supports sub-agent payout encoded in submit optParams.
+// BondHook — IACPHook extension for bonding, sub-agent payout, ERC-8004 rep
+//
+// Changes in this revision:
+//   Step 1: releaseExpiredBond(jobId) — escape hatch when a job expires after
+//           submit and claimRefund already ran (no hook called by claimRefund).
+//   Step 3: beforeAction / afterAction both receive optParams (not msg.data).
+//           _extractOptParams removed; submit sub-agent decoded directly.
+//   Step 4: sub-agent payout is best-effort — provider cannot block completion
+//           by withholding allowance.
 // ---------------------------------------------------------------------------
 contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
     using SafeERC20 for IERC20;
@@ -41,24 +45,20 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
     IReputationRegistry public immutable reputationRegistry;
     IIdentityRegistry   public immutable identityRegistry;
 
-    // BOND_RATIO: 50% of job budget must be locked (5000 / 10000)
-    uint256 public constant BOND_RATIO_BPS = 5_000;
+    uint256 public constant BOND_RATIO_BPS = 5_000;   // 50% of budget
     uint256 public constant BPS_DENOM      = 10_000;
 
-    // Free bond per provider (total staked minus locked)
     mapping(address => uint256) public bondBalance;    // total staked
     mapping(address => uint256) public bondLocked;     // locked in live jobs
 
-    // jobId => locked bond amount
-    mapping(uint256 => uint256) public jobBondLocked;
-    // jobId => sub-agent payout info
+    mapping(uint256 => uint256) public jobBondLocked;  // jobId → locked amount
+
     struct SubAgentOrder {
         address subAgent;
         uint256 cost;
     }
     mapping(uint256 => SubAgentOrder) public subAgentOrders;
 
-    // AgentId lookup: provider address => ERC-8004 agentId (0 = not registered)
     mapping(address => uint256) public providerAgentId;
 
     // ── Errors ──────────────────────────────────────────────────────────────
@@ -67,8 +67,9 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
     error BondLockedInLiveJob();
     error SubAgentIsProvider();
     error SubAgentCostExceedsProviderShare();
-    error MissingSubAgentAllowance(address provider, uint256 required);
     error ZeroAddress();
+    error JobNotSettled();       // Step 1: job must be Expired or Rejected
+    error NoBondLocked();        // Step 1: nothing to release
 
     // ── Events ──────────────────────────────────────────────────────────────
     event BondStaked(address indexed provider, uint256 amount);
@@ -76,13 +77,18 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
     event BondLocked(address indexed provider, uint256 jobId, uint256 amount);
     event BondReleased(address indexed provider, uint256 jobId, uint256 amount);
     event BondSlashed(address indexed provider, uint256 jobId, address recipient, uint256 amount);
+    event BondReleasedOnExpiry(address indexed provider, uint256 jobId, uint256 amount); // Step 1
     event SubAgentPaid(uint256 indexed jobId, address indexed subAgent, uint256 cost);
+    event SubAgentPayoutSkipped(uint256 indexed jobId, address indexed subAgent, uint256 cost); // Step 4
     event AgentIdRegistered(address indexed provider, uint256 agentId);
 
-    // ── Function selectors (from AgenticCommerce) ────────────────────────────
-    bytes4 private constant SEL_SUBMIT   = bytes4(keccak256("submit(uint256,bytes,bytes)"));
-    bytes4 private constant SEL_COMPLETE = bytes4(keccak256("complete(uint256,string,bytes)"));
-    bytes4 private constant SEL_REJECT   = bytes4(keccak256("reject(uint256,string,bytes)"));
+    // ── Function selectors ──────────────────────────────────────────────────
+    // submit(uint256,bytes32,bytes)
+    bytes4 private constant SEL_SUBMIT   = bytes4(keccak256("submit(uint256,bytes32,bytes)"));
+    // complete(uint256,bytes32,bytes)
+    bytes4 private constant SEL_COMPLETE = bytes4(keccak256("complete(uint256,bytes32,bytes)"));
+    // reject(uint256,bytes32,bytes)
+    bytes4 private constant SEL_REJECT   = bytes4(keccak256("reject(uint256,bytes32,bytes)"));
 
     modifier onlyACP() {
         if (msg.sender != address(acp)) revert OnlyACP();
@@ -104,15 +110,12 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
 
     // ── Bond management ──────────────────────────────────────────────────────
 
-    /// @notice Provider stakes USDC as collateral.
     function stakeBond(uint256 amount) external nonReentrant {
         usdc.safeTransferFrom(msg.sender, address(this), amount);
         bondBalance[msg.sender] += amount;
         emit BondStaked(msg.sender, amount);
     }
 
-    /// @notice Provider withdraws free bond.
-    ///         Never releases bond locked against a live job.
     function withdrawBond(uint256 amount) external nonReentrant {
         uint256 free = _freeBond(msg.sender);
         if (amount > free) revert BondLockedInLiveJob();
@@ -121,9 +124,33 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
         emit BondWithdrawn(msg.sender, amount);
     }
 
-    /// @notice Register your ERC-8004 agentId so reputation can be recorded.
+    /// @notice Step 1 — release a bond locked against a job that has expired or been rejected.
+    ///         callable by anyone; no access control needed.
+    ///         Does NOT slash — the provider did the work; the client already got the escrow back.
+    function releaseExpiredBond(uint256 jobId) external nonReentrant {
+        uint256 locked = jobBondLocked[jobId];
+        if (locked == 0) revert NoBondLocked();
+
+        IAgenticCommerce.Job memory job = acp.getJob(jobId);
+        // Only release for terminal non-completion states
+        if (
+            job.status != IAgenticCommerce.JobStatus.Expired &&
+            job.status != IAgenticCommerce.JobStatus.Rejected
+        ) revert JobNotSettled();
+
+        address provider = job.provider;
+
+        // Release the lock — restore to free bond
+        bondLocked[provider]  -= locked;
+        jobBondLocked[jobId]   = 0;
+
+        // Clear sub-agent order
+        delete subAgentOrders[jobId];
+
+        emit BondReleasedOnExpiry(provider, jobId, locked);
+    }
+
     function registerAgentId(uint256 agentId) external {
-        // Verify caller owns this agent token
         require(identityRegistry.ownerOf(agentId) == msg.sender, "Not agent owner");
         providerAgentId[msg.sender] = agentId;
         emit AgentIdRegistered(msg.sender, agentId);
@@ -131,61 +158,54 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
 
     // ── IACPHook ─────────────────────────────────────────────────────────────
 
-    function beforeAction(uint256 jobId, bytes4 selector, bytes calldata data)
+    /// Step 3: optParams passed directly — no msg.data parsing
+    function beforeAction(uint256 jobId, bytes4 selector, bytes calldata optParams)
         external
         override
         onlyACP
     {
         if (selector == SEL_SUBMIT) {
-            _beforeSubmit(jobId, data);
+            _beforeSubmit(jobId, optParams);
         }
-        // No before-action needed for complete/reject
     }
 
-    function afterAction(uint256 jobId, bytes4 selector, bytes calldata data)
+    function afterAction(uint256 jobId, bytes4 selector, bytes calldata optParams)
         external
         override
         nonReentrant
         onlyACP
     {
         if (selector == SEL_COMPLETE) {
-            _afterComplete(jobId, data);
+            _afterComplete(jobId);
         } else if (selector == SEL_REJECT) {
             _afterReject(jobId);
         }
+        // optParams unused in after hooks for now; kept for future extensions
+        (optParams);
     }
 
     // ── Internal hook logic ──────────────────────────────────────────────────
 
-    function _beforeSubmit(uint256 jobId, bytes calldata callData) internal {
+    /// Step 3: decode sub-agent directly from optParams
+    function _beforeSubmit(uint256 jobId, bytes calldata optParams) internal {
         IAgenticCommerce.Job memory job = acp.getJob(jobId);
         uint256 required = (job.budget * BOND_RATIO_BPS) / BPS_DENOM;
         uint256 free     = _freeBond(job.provider);
         if (free < required) revert InsufficientFreeBond(required, free);
 
-        // Parse sub-agent order from optParams (last param of submit calldata)
-        // submit(uint256 jobId, bytes deliverable, bytes optParams) → decode optParams
-        // We receive the full calldata of the submit() call. Extract optParams:
-        // selector(4) + jobId(32) + deliverable_offset(32) + optParams_offset(32)
-        // + deliverable_length(32) + deliverable_data + optParams_length(32) + optParams_data
-        // Simpler: decode from the end using abi.decode on stripped data.
-        bytes memory optParams = _extractOptParams(callData);
         if (optParams.length > 0) {
             (address subAgent, uint256 cost) = abi.decode(optParams, (address, uint256));
             if (subAgent == job.provider) revert SubAgentIsProvider();
-            // Validate cost doesn't exceed provider share
-            // We don't know fee split here, so just ensure cost < budget
-            // The real check happens at complete time
+            if (cost >= job.budget) revert SubAgentCostExceedsProviderShare();
             subAgentOrders[jobId] = SubAgentOrder({ subAgent: subAgent, cost: cost });
         }
 
-        // Lock bond
-        bondLocked[job.provider]  += required;
-        jobBondLocked[jobId]       = required;
+        bondLocked[job.provider] += required;
+        jobBondLocked[jobId]      = required;
         emit BondLocked(job.provider, jobId, required);
     }
 
-    function _afterComplete(uint256 jobId, bytes calldata /*callData*/) internal {
+    function _afterComplete(uint256 jobId) internal {
         IAgenticCommerce.Job memory job = acp.getJob(jobId);
         uint256 locked = jobBondLocked[jobId];
 
@@ -194,84 +214,67 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
         jobBondLocked[jobId]      = 0;
         emit BondReleased(job.provider, jobId, locked);
 
-        // Sub-agent payout
+        // Step 4: sub-agent payout is best-effort — never blocks completion
         SubAgentOrder memory order = subAgentOrders[jobId];
         if (order.subAgent != address(0) && order.cost > 0) {
-            // cost must not exceed provider payout (budget minus fees is opaque here)
-            // Enforce: cost < budget (conservative; ACP already paid provider)
-            if (order.cost >= job.budget) revert SubAgentCostExceedsProviderShare();
-            // Pull cost from provider (provider must have approved BondHook)
             uint256 allowance = usdc.allowance(job.provider, address(this));
-            if (allowance < order.cost) revert MissingSubAgentAllowance(job.provider, order.cost);
-            usdc.safeTransferFrom(job.provider, order.subAgent, order.cost);
-            emit SubAgentPaid(jobId, order.subAgent, order.cost);
+            if (allowance >= order.cost) {
+                try usdc.transferFrom(job.provider, order.subAgent, order.cost) returns (bool ok) {
+                    if (ok) {
+                        emit SubAgentPaid(jobId, order.subAgent, order.cost);
+                    } else {
+                        emit SubAgentPayoutSkipped(jobId, order.subAgent, order.cost);
+                    }
+                } catch {
+                    emit SubAgentPayoutSkipped(jobId, order.subAgent, order.cost);
+                }
+            } else {
+                emit SubAgentPayoutSkipped(jobId, order.subAgent, order.cost);
+            }
             delete subAgentOrders[jobId];
         }
 
-        // Positive reputation
+        // Positive reputation (best-effort)
         _recordReputation(job.provider, jobId, int128(1));
     }
 
     function _afterReject(uint256 jobId) internal {
         IAgenticCommerce.Job memory job = acp.getJob(jobId);
         uint256 locked = jobBondLocked[jobId];
-        if (locked == 0) return; // no bond was locked (job was Open when rejected)
+        if (locked == 0) return;
 
         bondBalance[job.provider] -= locked;
         bondLocked[job.provider]  -= locked;
         jobBondLocked[jobId]       = 0;
 
-        // Send slashed bond to client
         usdc.safeTransfer(job.client, locked);
         emit BondSlashed(job.provider, jobId, job.client, locked);
 
-        // Negative reputation
         _recordReputation(job.provider, jobId, int128(-1));
-
         delete subAgentOrders[jobId];
     }
 
-    // ── Reputation helper ────────────────────────────────────────────────────
+    // ── Reputation ───────────────────────────────────────────────────────────
 
     function _recordReputation(address provider, uint256 jobId, int128 score) internal {
         uint256 agentId = providerAgentId[provider];
         if (agentId == 0 || address(reputationRegistry) == address(0)) return;
-        // giveFeedback with correct ERC-8004 ReputationRegistry ABI
         try reputationRegistry.giveFeedback(
-            agentId,
-            score,
-            0,                   // valueDecimals
-            "erc8183",           // tag1
-            score > 0 ? "complete" : "reject",  // tag2
-            "",                  // endpoint
-            "",                  // feedbackURI
-            bytes32(jobId)       // feedbackHash = jobId for auditability
-        ) {} catch {} // best-effort; do not block settle on rep failure
-    }
-
-    // ── Pure helpers ─────────────────────────────────────────────────────────
-
-    function _freeBond(address provider) internal view returns (uint256) {
-        return bondBalance[provider] - bondLocked[provider];
-    }
-
-    /// @dev Extract optParams from submit() calldata.
-    ///      submit(uint256, bytes, bytes) ABI:
-    ///      [0:4]   selector
-    ///      [4:36]  jobId
-    ///      [36:68] offset_deliverable
-    ///      [68:100] offset_optParams
-    ///      Dynamic data follows. We decode the whole tail and return optParams.
-    function _extractOptParams(bytes calldata data) internal pure returns (bytes memory) {
-        if (data.length <= 4) return "";
-        // Skip selector (4 bytes) then decode the three params
-        (, , bytes memory optParams) = abi.decode(data[4:], (uint256, bytes, bytes));
-        return optParams;
+            agentId, score, 0,
+            "erc8183",
+            score > 0 ? "complete" : "reject",
+            "", "",
+            bytes32(jobId)
+        ) {} catch {}
     }
 
     // ── View ─────────────────────────────────────────────────────────────────
 
     function freeBond(address provider) external view returns (uint256) {
         return _freeBond(provider);
+    }
+
+    function _freeBond(address provider) internal view returns (uint256) {
+        return bondBalance[provider] - bondLocked[provider];
     }
 }

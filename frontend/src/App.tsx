@@ -1,207 +1,231 @@
-import { useState } from "react";
+// Nexus A2A — ERC-8183 Agentic Commerce Platform
+// Main layout: full-screen izometric 3D board (Rialo diplomacy style),
+// left sovereign directory, bottom ledger, top navbar with wallet + HUD.
+
+import { useState, useEffect } from "react";
 import { ConnectKitButton } from "connectkit";
-import { useAccount, useReadContract } from "wagmi";
-import { Cpu, ChevronLeft, ToggleLeft, ToggleRight, Layers } from "lucide-react";
+import { useAccount, useChainId, useSwitchChain } from "wagmi";
+import { useContractRead, useWatchContractEvent } from "wagmi";
+import { ArcWorldProvider, useArcWorld, type AcpJob } from "./context/ArcWorldContext";
+import { SovereignDirectory, Ledger, DetailPanel } from "./components/Panels";
 import Board from "./components/board/Board";
-import { AgentDirectory, AgentDossier, AgreementInspector, Ledger } from "./components/Panels";
 import WalletCard from "./components/WalletCard";
-import { ArcWorldProvider, useArcWorld } from "./context/ArcWorldContext";
-import { lockedEscrow } from "./lib/engine";
-import { ACP_ABI } from "./abis";
-import { ACP_ADDRESS, TARGET_CHAIN } from "./config";
+import { ACP_ADDRESS, ARC_CHAIN_ID } from "./config";
+import { ACP_ABI as AGENT_MARKET_ABI } from "./abis";
+import { formatUsdc } from "./utils";
 
-// ── ACP live job count read from chain ──────────────────────────────────────
-function useJobCount() {
-  const { data } = useReadContract({
-    address: ACP_ADDRESS || undefined,
-    abi: ACP_ABI,
+const PANEL_W  = 260;
+const LEDGER_H = 180;
+
+// ── Inner app (needs ArcWorldProvider) ───────────────────────────────────────
+function Inner() {
+  const {
+    world, acpJobs, acpAgreements,
+    hoveredId, selectedId, selectedAgreement, focusId, showLabels, autonomous, busyContracts,
+    statusOf,
+    setHovered, setSelected, setSelectedAgreement, setFocusId, setShowLabels, setAutonomous,
+    setAcpJobs,
+  } = useArcWorld();
+
+  const [selectedJob, setSelectedJob] = useState<AcpJob | null>(null);
+  const [panelOpen,   setPanelOpen]   = useState(false);
+
+  const chainId = useChainId();
+  const { switchChain } = useSwitchChain();
+  const { address } = useAccount();
+  const onWrongChain = chainId !== ARC_CHAIN_ID;
+
+  // ── Load all jobs from chain ─────────────────────────────────────────────
+  const { data: taskCountRaw } = useContractRead({
+    address: ACP_ADDRESS as `0x${string}`,
+    abi: AGENT_MARKET_ABI,
     functionName: "jobCount",
-    chainId: TARGET_CHAIN.id,
-    query: { enabled: !!ACP_ADDRESS, refetchInterval: 10_000 },
   });
-  return ACP_ADDRESS ? Number(data ?? 0n) : null;
-}
+  const taskCount = Number(taskCountRaw ?? 0n);
 
-// ── Main app ─────────────────────────────────────────────────────────────────
-function NexusApp() {
-  const { isConnected } = useAccount();
-  const { world, statusOf, busyContracts, autonomous, setAutonomous } = useArcWorld();
-  const jobCount = useJobCount();
+  // Fetch jobs individually (simple approach for demo)
+  useEffect(() => {
+    if (!taskCount || taskCount === 0) return;
+    const load = async () => {
+      const jobs: AcpJob[] = [];
+      for (let i = 1; i <= Math.min(taskCount, 50); i++) {
+        // We'll rely on event-based loading instead for now
+      }
+    };
+    load();
+  }, [taskCount]);
 
-  const [hoveredId,         setHoveredId]         = useState<string | null>(null);
-  const [selectedId,        setSelectedId]         = useState<string | null>(null);
-  const [focusId,           setFocusId]            = useState<string | null>(null);
-  const [selectedAgreement, setSelectedAgreement]  = useState<number | null>(null);
-  const [showLabels,        setShowLabels]         = useState(true);
-  const [leftOpen,          setLeftOpen]           = useState(true);
-  const [rightPanel,        setRightPanel]         = useState<"agent" | "agreement" | null>(null);
+  // Watch JobCreated events and build job list from them
+  useWatchContractEvent({
+    address: ACP_ADDRESS as `0x${string}`,
+    abi: AGENT_MARKET_ABI,
+    eventName: "JobCreated",
+    onLogs: (logs) => {
+      const newJobs: AcpJob[] = logs.map((l: any) => ({
+        id:          BigInt(l.args?.jobId ?? 0),
+        client:      l.args?.client   ?? "",
+        provider:    l.args?.provider ?? "",
+        evaluator:   l.args?.evaluator ?? "",
+        description: l.args?.description ?? "",
+        budget:      0n,
+        expiredAt:   BigInt(l.args?.expiredAt ?? 0),
+        status:      0,
+      }));
+      if (newJobs.length > 0) setAcpJobs([...acpJobs, ...newJobs]);
+    },
+  });
 
-  const escrow = lockedEscrow(world);
+  // ── Merge world agreements + ACP arcs for Board ─────────────────────────
+  const allAgreements = [...world.agreements, ...acpAgreements];
+  const mergedWorld   = { ...world, agreements: allAgreements };
 
-  function selectAgent(id: string) {
-    setSelectedId(id); setFocusId(id); setSelectedAgreement(null); setRightPanel("agent");
-  }
-  function selectAgreement(id: number) {
-    setSelectedAgreement(id); setRightPanel("agreement");
-  }
-  function clearSelection() {
-    setSelectedId(null); setFocusId(null); setSelectedAgreement(null); setRightPanel(null);
-  }
+  const openPanel = (job: AcpJob) => { setSelectedJob(job); setPanelOpen(true); setSelected(null); };
+  const closePanel = () => { setSelectedJob(null); setPanelOpen(false); };
+
+  // ── Top HUD right side ────────────────────────────────────────────────────
+  const locked = world.agreements.reduce((s,a) => s + a.bondA + a.bondB + a.callBudget, 0);
+  const acpJobCount = acpJobs.length;
 
   return (
-    <div className="h-screen w-screen overflow-hidden flex flex-col bg-[#060f1a]">
+    <div style={{ position:"fixed",inset:0,background:"#060f1a",color:"#e2e8f0",fontFamily:"'Space Grotesk','DM Sans',system-ui,sans-serif",overflow:"hidden" }}>
 
-      {/* ── Navbar ── */}
-      <header className="h-12 shrink-0 flex items-center px-4 gap-3 border-b border-[rgba(172,198,233,0.1)] bg-[rgba(13,27,47,0.95)] backdrop-blur-sm z-30">
-        <Cpu className="w-5 h-5 text-[#acc6e9] shrink-0" />
-        <span
-          className="font-semibold text-[#f9faf3] tracking-tight text-sm"
-          style={{ fontFamily: "'Space Grotesk',sans-serif" }}
-        >
-          Nexus A2A
-        </span>
-        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full border border-[#8dd89f]/40 text-[#8dd89f]">
-          ARC MAINNET
-        </span>
+      {/* ── Navbar ──────────────────────────────────────────────────────── */}
+      <div style={{
+        position:"absolute",top:0,left:0,right:0,height:48,zIndex:30,
+        background:"rgba(6,15,26,0.92)",borderBottom:"1px solid #1a3a5a",
+        display:"flex",alignItems:"center",padding:"0 16px",gap:12,backdropFilter:"blur(8px)",
+      }}>
+        {/* Logo */}
+        <div style={{ display:"flex",alignItems:"center",gap:8,marginRight:8 }}>
+          <div style={{
+            width:28,height:28,borderRadius:6,
+            background:"linear-gradient(135deg,#acc6e9,#8dd89f)",
+            display:"flex",alignItems:"center",justifyContent:"center",
+            fontSize:14,fontWeight:900,color:"#0d1b2f",
+          }}>N</div>
+          <div>
+            <div style={{ fontSize:13,fontWeight:700,color:"#e2e8f0",letterSpacing:0.3 }}>Nexus A2A</div>
+            <div style={{ fontSize:9,color:"#64748b",letterSpacing:1 }}>ERC-8183 · ARC MAINNET</div>
+          </div>
+        </div>
 
-        {/* ERC-8183 badge */}
-        <span className="hidden sm:flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full border border-[rgba(172,198,233,0.3)] text-[#acc6e9]">
-          <Layers className="w-3 h-3" />ERC-8183
-        </span>
+        {/* Chain badge */}
+        <div style={{
+          padding:"2px 8px",borderRadius:20,border:`1px solid ${onWrongChain?"#e86d7a":"#8dd89f"}`,
+          background: onWrongChain ? "rgba(232,109,122,0.1)" : "rgba(141,216,159,0.1)",
+          fontSize:9,fontWeight:700,letterSpacing:0.8,
+          color: onWrongChain ? "#e86d7a" : "#8dd89f",cursor: onWrongChain ? "pointer" : "default",
+        }} onClick={() => onWrongChain && switchChain?.({ chainId: ARC_CHAIN_ID })}>
+          {onWrongChain ? "⚠ SWITCH TO ARC" : "● ARC MAINNET"}
+        </div>
 
-        {/* Live ACP job count */}
-        {jobCount !== null && (
-          <span className="text-[11px] text-[#64748b] hidden md:block">
-            {jobCount} job{jobCount !== 1 ? "s" : ""} onchain
-          </span>
-        )}
+        <div style={{ flex:1 }} />
 
-        <span className="flex-1" />
+        {/* Stats */}
+        <div style={{ display:"flex",gap:16,alignItems:"center" }}>
+          {[
+            { label:"AGENTS",    value: world.nodes.length },
+            { label:"ACP JOBS",  value: acpJobCount },
+            { label:"ESCROW",    value: `${locked.toFixed(1)} USDC` },
+          ].map(s => (
+            <div key={s.label} style={{ textAlign:"center" }}>
+              <div style={{ fontSize:13,fontWeight:700,color:"#acc6e9" }}>{s.value}</div>
+              <div style={{ fontSize:8,color:"#64748b",letterSpacing:1 }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
 
+        {/* Autonomous toggle */}
         <button
           onClick={() => setAutonomous(!autonomous)}
-          className="flex items-center gap-1.5 text-[11px] text-[#94a3b8] hover:text-[#f9faf3] transition-colors"
+          style={{
+            display:"flex",alignItems:"center",gap:6,padding:"4px 10px",
+            background: autonomous ? "rgba(141,216,159,0.12)" : "rgba(26,58,90,0.4)",
+            border: `1px solid ${autonomous?"#8dd89f":"#1a3a5a"}`,
+            borderRadius:20,color: autonomous?"#8dd89f":"#64748b",
+            cursor:"pointer",fontSize:10,fontWeight:700,letterSpacing:0.6,
+          }}
         >
-          {autonomous
-            ? <ToggleRight className="w-4 h-4 text-[#8dd89f]" />
-            : <ToggleLeft  className="w-4 h-4" />}
-          Autonomous agents
+          <div style={{
+            width:24,height:14,borderRadius:7,border:`1px solid ${autonomous?"#8dd89f":"#475569"}`,
+            background: autonomous?"#8dd89f":"transparent",position:"relative",transition:"background 0.2s",
+          }}>
+            <div style={{
+              position:"absolute",top:2,width:8,height:8,borderRadius:"50%",
+              background: autonomous?"#0d1b2f":"#475569",transition:"left 0.2s",
+              left: autonomous?12:2,
+            }} />
+          </div>
+          Autonomous
         </button>
 
+        {/* Labels toggle */}
         <button
-          onClick={() => setShowLabels(v => !v)}
-          className="text-[11px] text-[#94a3b8] hover:text-[#f9faf3] transition-colors hidden sm:block"
+          onClick={() => setShowLabels(!showLabels)}
+          style={{
+            padding:"4px 10px",background:"rgba(26,58,90,0.4)",
+            border:`1px solid ${showLabels?"#acc6e9":"#1a3a5a"}`,
+            borderRadius:20,color:showLabels?"#acc6e9":"#64748b",
+            cursor:"pointer",fontSize:10,fontWeight:700,
+          }}
         >
-          {showLabels ? "Hide labels" : "Show labels"}
+          Labels
         </button>
 
+        {/* Wallet */}
         <ConnectKitButton />
-      </header>
-
-      {/* ── Main layout ── */}
-      <div className="flex flex-1 min-h-0 relative">
-
-        {/* Left panel */}
-        <div
-          className={`relative flex flex-col shrink-0 transition-all duration-200 z-20 ${leftOpen ? "w-72" : "w-0"} overflow-hidden`}
-        >
-          <div className="w-72 h-full flex flex-col border-r border-[rgba(172,198,233,0.1)] bg-[rgba(13,27,47,0.96)]">
-            <div className="px-3 pt-3 pb-1.5 shrink-0">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-[10px] font-semibold tracking-widest text-[#64748b]">AGENTS</span>
-                <span className="text-[10px] text-[#64748b]">{world.nodes.length} registered</span>
-              </div>
-              <AgentDirectory selectedId={selectedId} onSelect={selectAgent} />
-            </div>
-            <div className="mx-3 my-1.5 border-t border-[rgba(172,198,233,0.08)]" />
-            <div className="px-3 pb-3 flex flex-col min-h-0 flex-1">
-              <div className="text-[10px] font-semibold tracking-widest text-[#64748b] mb-1.5 shrink-0">LEDGER</div>
-              <Ledger />
-            </div>
-          </div>
-        </div>
-
-        {/* Collapse toggle */}
-        <button
-          onClick={() => setLeftOpen(v => !v)}
-          className="absolute top-1/2 -translate-y-1/2 z-30 w-5 h-10 flex items-center justify-center bg-[rgba(13,27,47,0.9)] border border-[rgba(172,198,233,0.15)] rounded-r-lg transition-all hover:bg-[rgba(172,198,233,0.1)]"
-          style={{ left: leftOpen ? "288px" : "0px" }}
-        >
-          <ChevronLeft className={`w-3 h-3 text-[#94a3b8] transition-transform ${leftOpen ? "" : "rotate-180"}`} />
-        </button>
-
-        {/* 3-D Board */}
-        <div className="flex-1 relative min-w-0">
-          <Board
-            world={world} statusOf={statusOf} busyContracts={busyContracts} escrow={escrow}
-            hoveredId={hoveredId} selectedId={selectedId} focusId={focusId}
-            selectedAgreement={selectedAgreement} showLabels={showLabels}
-            onHover={setHoveredId}
-            onSelect={id => id ? selectAgent(id) : clearSelection()}
-            onSelectAgreement={selectAgreement}
-          />
-
-          {/* Bottom legend */}
-          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-3 px-3 py-1.5 rounded-xl bg-[rgba(13,27,47,0.85)] border border-[rgba(172,198,233,0.12)] text-[10px] text-[#64748b] pointer-events-none">
-            <span className="flex items-center gap-1"><span className="w-6 h-px bg-[#acc6e9] inline-block" />Service</span>
-            <span className="flex items-center gap-1"><span className="w-6 border-t border-dashed border-[#8dd89f] inline-block" />Data</span>
-            <span className="flex items-center gap-1"><span className="w-6 border-t border-dotted border-[#cbdbf2] inline-block" />Non-aggression</span>
-            <span className="text-[#8dd89f]">● Active</span>
-            <span className="text-[#acc6e9]">● Under review</span>
-            <span className="text-[#e86d7a]">● Suspended</span>
-            <span className="text-[#acc6e9]">◎ Arc Escrow</span>
-          </div>
-
-          {/* Escrow + ACP HUD */}
-          <div className="absolute top-3 right-3 text-right pointer-events-none">
-            <div className="text-[10px] text-[#64748b] uppercase tracking-widest">ARC ESCROW</div>
-            <div className="text-sm font-semibold font-mono text-[#acc6e9]">{escrow.toFixed(2)} USDC</div>
-            <div className="text-[10px] text-[#64748b] mt-0.5">
-              {world.nodes.length} agents · {world.agreements.filter(c => c.status === "active").length} agreements
-            </div>
-            {jobCount !== null && (
-              <div className="text-[10px] text-[#8dd89f] mt-0.5 font-medium">
-                {jobCount} ERC-8183 jobs live
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Right panel */}
-        {rightPanel && (
-          <div className="w-80 shrink-0 flex flex-col border-l border-[rgba(172,198,233,0.1)] bg-[rgba(13,27,47,0.96)] z-20">
-            <div className="flex items-center justify-between px-3 pt-2.5 pb-1.5 border-b border-[rgba(172,198,233,0.08)] shrink-0">
-              <span className="text-[10px] font-semibold tracking-widest text-[#64748b]">
-                {rightPanel === "agent" ? "AGENT" : "AGREEMENT"}
-              </span>
-              <button onClick={clearSelection} className="text-[#64748b] hover:text-[#f9faf3] text-lg leading-none">×</button>
-            </div>
-            <div className="flex-1 overflow-y-auto px-3 py-2 text-[13px] text-[#f9faf3]">
-              {rightPanel === "agent" && selectedId && (
-                <AgentDossier id={selectedId} onSelectAgreement={selectAgreement} onPropose={() => {}} />
-              )}
-              {rightPanel === "agreement" && selectedAgreement !== null && (
-                <AgreementInspector id={selectedAgreement} onSelectAgent={selectAgent} onDispute={() => {}} />
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
-      {/* Wallet float */}
-      {isConnected && (
-        <div className="fixed bottom-4 right-4 z-40">
-          <WalletCard />
+      {/* ── Layout ───────────────────────────────────────────────────────── */}
+      <div style={{ position:"absolute",top:48,left:0,bottom:0,right:0,display:"flex" }}>
+
+        {/* Left panel */}
+        <div style={{ width:PANEL_W,flexShrink:0,display:"flex",flexDirection:"column",height:"100%" }}>
+          <div style={{ flex:1,overflow:"hidden" }}>
+            <SovereignDirectory onSelectJob={openPanel} />
+          </div>
         </div>
-      )}
+
+        {/* Center: 3D board + bottom ledger */}
+        <div style={{ flex:1,display:"flex",flexDirection:"column",overflow:"hidden",position:"relative" }}>
+          <div style={{ flex:1,position:"relative" }}>
+            <Board
+              world={mergedWorld}
+              statusOf={statusOf}
+              busyContracts={busyContracts}
+              escrow={locked}
+              hoveredId={hoveredId}
+              selectedId={selectedId}
+              focusId={focusId}
+              selectedAgreement={selectedAgreement}
+              showLabels={showLabels}
+              interactive
+              onHover={setHovered}
+              onSelect={(id) => { setSelected(id); if (id) { setFocusId(id); setPanelOpen(true); setSelectedJob(null); } else setPanelOpen(false); }}
+              onSelectAgreement={(id) => setSelectedAgreement(id)}
+            />
+
+            {/* Detail slide-over */}
+            {panelOpen && (
+              <DetailPanel acpJob={selectedJob} onClose={closePanel} />
+            )}
+          </div>
+
+          {/* Bottom ledger */}
+          <div style={{ height:LEDGER_H,flexShrink:0 }}>
+            <Ledger />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
+// ── Root ─────────────────────────────────────────────────────────────────────
 export default function App() {
   return (
     <ArcWorldProvider>
-      <NexusApp />
+      <Inner />
     </ArcWorldProvider>
   );
 }

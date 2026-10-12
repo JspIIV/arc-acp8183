@@ -221,6 +221,12 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Evaluator completes a Submitted job. reason is bytes32 per ERC-8183 spec.
+    /// @dev    GAS WARNING: a hooked job with a registered ERC-8004 agentId costs roughly
+    ///         350k gas. Automatic gas estimation can under-estimate this because the
+    ///         BondHook calls the ReputationRegistry in an external call whose cost depends
+    ///         on registry state. Always send complete() with an explicit gas limit of at
+    ///         least 400_000 for hooked jobs to avoid the out-of-gas failure observed on
+    ///         mainnet (tx 0xac1482c746ef1548ebfec55ac940257f458ac198c2e0be74e3e9a8918df4cec3).
     function complete(uint256 jobId, bytes32 reason, bytes calldata optParams) external nonReentrant {
         Job storage job = _requireJob(jobId);
         _requireStatus(job, JobStatus.Submitted);

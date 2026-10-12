@@ -2,44 +2,101 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─── Arc Dark tokens ─────────────────────────────────────────── */
 :root {
-  color-scheme: dark;
+  --bg:             #0d1b2f;
+  --bg-gradient:    linear-gradient(180deg, #0d1b2f 0%, #0d1b2f 58%, #122d45 100%);
+  --surface:        rgba(255, 255, 255, 0.07);
+  --surface-strong: rgba(255, 255, 255, 0.11);
+  --surface-muted:  #1f2f44;
+  --ink:            #f9faf3;
+  --ink-2:          #e3ecf9;
+  --muted:          #cbd5e1;
+  --subtle:         #94a3b8;
+  --border:         rgba(255, 255, 255, 0.12);
+  --border-strong:  rgba(203, 219, 242, 0.55);
+  --accent:         #acc6e9;
+  --accent-hover:   #cbdbf2;
+  --success:        #8dd89f;
+  --danger:         #e86d7a;
 }
 
+/* ─── Reset & base ────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
 body {
-  background-color: #0d1b2f;
-  color: #e8f0f8;
-  font-family: "DM Sans", system-ui, sans-serif;
+  margin: 0;
+  min-height: 100dvh;
+  background: var(--bg);
+  background-image: var(--bg-gradient);
+  background-attachment: fixed;
+  color: var(--ink);
+  font-family: 'DM Sans', sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
-@layer components {
-  .field-input {
-    @apply w-full rounded-lg border border-arc-border bg-arc-bg px-3 py-2
-           text-sm text-arc-text placeholder-arc-muted
-           focus:border-arc-accent focus:outline-none focus:ring-1 focus:ring-arc-accent
-           transition-colors;
-  }
+/* ─── Typography helpers ──────────────────────────────────────── */
+.display { font-family: 'Space Grotesk', sans-serif; letter-spacing: -0.03em; }
+.mono    { font-family: 'JetBrains Mono', Menlo, monospace; }
 
-  .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 rounded-lg
-           bg-arc-accent px-4 py-2.5 text-sm font-medium text-arc-bg
-           hover:bg-arc-accent/90 disabled:opacity-40 disabled:cursor-not-allowed
-           transition-colors;
-  }
+/* ─── Surface helpers ─────────────────────────────────────────── */
+.glass {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
 
-  .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 rounded-lg
-           border border-arc-border px-4 py-2.5 text-sm font-medium text-arc-subtext
-           hover:border-arc-accent/50 hover:text-arc-text disabled:opacity-40
-           transition-colors;
-  }
+.glass-strong {
+  background: var(--surface-strong);
+  border: 1px solid var(--border-strong);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
 
-  .card {
-    @apply rounded-xl border border-arc-border bg-arc-surface p-5;
-  }
+/* ─── Pill / badge helper ─────────────────────────────────────── */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 
-  .status-badge {
-    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium;
-  }
+/* ─── Form input base ─────────────────────────────────────────── */
+.field-input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  color: var(--ink);
+  border-radius: 12px;
+  padding: 8px 12px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s;
+  font-family: inherit;
+}
+.field-input:focus {
+  border-color: var(--border-strong);
+}
+.field-input::placeholder {
+  color: var(--subtle);
+}
+.field-input option {
+  background: #1f2f44;
+  color: var(--ink);
+}
+
+/* ─── Sonner toast override ───────────────────────────────────── */
+[data-sonner-toaster] {
+  --normal-bg:     #1f2f44;
+  --normal-border: rgba(203, 219, 242, 0.18);
+  --normal-text:   #f9faf3;
+  --success-bg:    #1a3b2a;
+  --error-bg:      #3b1a24;
 }

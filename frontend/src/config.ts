@@ -54,3 +54,6 @@ export const wagmiConfig = createConfig(
 );
 
 export const TARGET_CHAIN = arcMainnet;
+
+// Convenience alias used by copied components
+export const ARC_CHAIN_ID = arcMainnet.id;

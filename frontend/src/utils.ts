@@ -1,5 +1,9 @@
 import { USDC_DECIMALS } from "./config";
 
+// Aliases used by arc-a2a-pipeline components
+export function formatUsdc(raw: bigint): string { return fmtUsdc(raw); }
+export function shortAddr(addr: string): string  { return fmtAddr(addr); }
+
 export const JOB_STATUS = ["Open", "Funded", "Submitted", "Completed", "Rejected", "Expired"] as const;
 export type JobStatusName = typeof JOB_STATUS[number];
 

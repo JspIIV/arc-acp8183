@@ -38,11 +38,15 @@ export default function EvaluatorView({ job }: { job: Job }) {
 
   function handleComplete() {
     if (!reason) { toast.error("Provide a reason/verdict"); return; }
+    // ⚠️ Explicit gas limit required: hooked jobs with a registered ERC-8004 agentId
+    // cost ~350k gas. Estimation can under-estimate this because the BondHook calls
+    // ReputationRegistry externally. See README § Gas requirement.
     writeContract({
       address: ACP_ADDRESS, abi: ACP_ABI, functionName: "complete",
       args: [job.id, reason, "0x"], chainId: TARGET_CHAIN.id,
+      gas: 400_000n,
     });
-    toast.info("Completing job…");
+    toast.info("Completing job… (gas: 400k)");
   }
 
   function handleReject() {
@@ -50,8 +54,9 @@ export default function EvaluatorView({ job }: { job: Job }) {
     writeContract({
       address: ACP_ADDRESS, abi: ACP_ABI, functionName: "reject",
       args: [job.id, reason, "0x"], chainId: TARGET_CHAIN.id,
+      gas: 400_000n,
     });
-    toast.info("Rejecting job…");
+    toast.info("Rejecting job… (gas: 400k)");
   }
 
   if (!isConnected) {

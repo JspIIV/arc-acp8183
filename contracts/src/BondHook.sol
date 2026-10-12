@@ -71,16 +71,26 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
     error JobNotSettled();       // Step 1: job must be Expired or Rejected
     error NoBondLocked();        // Step 1: nothing to release
 
+    /// @dev Minimum gas that must remain before attempting a reputation write.
+    ///      Below this threshold the call is skipped entirely and ReputationSkipped is emitted.
+    ///      Measured on mainnet: giveFeedback costs ~170k; 250k leaves margin.
+    uint256 public constant MIN_REPUTATION_GAS   = 250_000;
+    /// @dev Minimum gas that must remain before attempting a sub-agent transferFrom.
+    uint256 public constant MIN_SUB_AGENT_GAS     = 80_000;
+
     // ── Events ──────────────────────────────────────────────────────────────
     event BondStaked(address indexed provider, uint256 amount);
     event BondWithdrawn(address indexed provider, uint256 amount);
     event BondLocked(address indexed provider, uint256 jobId, uint256 amount);
     event BondReleased(address indexed provider, uint256 jobId, uint256 amount);
     event BondSlashed(address indexed provider, uint256 jobId, address recipient, uint256 amount);
-    event BondReleasedOnExpiry(address indexed provider, uint256 jobId, uint256 amount); // Step 1
+    event BondReleasedOnExpiry(address indexed provider, uint256 jobId, uint256 amount);
     event SubAgentPaid(uint256 indexed jobId, address indexed subAgent, uint256 cost);
-    event SubAgentPayoutSkipped(uint256 indexed jobId, address indexed subAgent, uint256 cost); // Step 4
+    event SubAgentPayoutSkipped(uint256 indexed jobId, address indexed subAgent, uint256 cost);
     event AgentIdRegistered(address indexed provider, uint256 agentId);
+    // Step 1: reputation observability events
+    event ReputationSkipped(address indexed provider, uint256 indexed jobId, string reason);
+    event ReputationFailed(address indexed provider, uint256 indexed jobId);
 
     // ── Function selectors ──────────────────────────────────────────────────
     // submit(uint256,bytes32,bytes)
@@ -214,27 +224,31 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
         jobBondLocked[jobId]      = 0;
         emit BondReleased(job.provider, jobId, locked);
 
-        // Step 4: sub-agent payout is best-effort — never blocks completion
+        // Step 2: sub-agent payout is best-effort — gas guard ensures skip is always recorded
         SubAgentOrder memory order = subAgentOrders[jobId];
         if (order.subAgent != address(0) && order.cost > 0) {
-            uint256 allowance = usdc.allowance(job.provider, address(this));
-            if (allowance >= order.cost) {
-                try usdc.transferFrom(job.provider, order.subAgent, order.cost) returns (bool ok) {
-                    if (ok) {
-                        emit SubAgentPaid(jobId, order.subAgent, order.cost);
-                    } else {
+            if (gasleft() < MIN_SUB_AGENT_GAS) {
+                emit SubAgentPayoutSkipped(jobId, order.subAgent, order.cost);
+            } else {
+                uint256 allowance = usdc.allowance(job.provider, address(this));
+                if (allowance >= order.cost) {
+                    try usdc.transferFrom(job.provider, order.subAgent, order.cost) returns (bool ok) {
+                        if (ok) {
+                            emit SubAgentPaid(jobId, order.subAgent, order.cost);
+                        } else {
+                            emit SubAgentPayoutSkipped(jobId, order.subAgent, order.cost);
+                        }
+                    } catch {
                         emit SubAgentPayoutSkipped(jobId, order.subAgent, order.cost);
                     }
-                } catch {
+                } else {
                     emit SubAgentPayoutSkipped(jobId, order.subAgent, order.cost);
                 }
-            } else {
-                emit SubAgentPayoutSkipped(jobId, order.subAgent, order.cost);
             }
             delete subAgentOrders[jobId];
         }
 
-        // Positive reputation (best-effort)
+        // Positive reputation (best-effort, with gas guard — Step 1)
         _recordReputation(job.provider, jobId, int128(1));
     }
 
@@ -256,16 +270,34 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
 
     // ── Reputation ───────────────────────────────────────────────────────────
 
+    /// @dev Step 1: reputation write with gas guard + observability events.
+    ///      If gasleft() < MIN_REPUTATION_GAS, skip the call and emit ReputationSkipped
+    ///      so the failure is visible on-chain. This prevents burning ~170k gas on a
+    ///      registry call that cannot succeed (mainnet tx 0xac1482c7…).
+    ///      Settlement never reverts because of reputation — the guard and catch are both
+    ///      present so failure is always observable but never fatal.
     function _recordReputation(address provider, uint256 jobId, int128 score) internal {
         uint256 agentId = providerAgentId[provider];
         if (agentId == 0 || address(reputationRegistry) == address(0)) return;
+
+        // Step 1: guard — skip if not enough gas to run the registry call
+        if (gasleft() < MIN_REPUTATION_GAS) {
+            emit ReputationSkipped(provider, jobId, "insufficient gas");
+            return;
+        }
+
         try reputationRegistry.giveFeedback(
             agentId, score, 0,
             "erc8183",
             score > 0 ? "complete" : "reject",
             "", "",
             bytes32(jobId)
-        ) {} catch {}
+        ) {
+            // success — no extra event needed; the registry emits its own
+        } catch {
+            // Step 1: catch emits ReputationFailed instead of swallowing silently
+            emit ReputationFailed(provider, jobId);
+        }
     }
 
     // ── View ─────────────────────────────────────────────────────────────────

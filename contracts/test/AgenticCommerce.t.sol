@@ -471,12 +471,16 @@ contract BondHookTest is ACPBase {
         vm.prank(evaluator);
         acp.reject(jobId, bytes32("bad work"), "");
 
-        // Budget refund goes to _owed (K-3); slashed bond is pushed directly by BondHook
-        assertEq(usdc.balanceOf(client) - clientBefore, 50e6, "slashed bond received directly");
-        assertEq(acp.owed(client), BUDGET, "budget refund credited in _owed");
+        // Step 3 (slashing pull): budget refund in acp._owed; slashed bond in hook._slashOwed
+        assertEq(usdc.balanceOf(client) - clientBefore, 0, "nothing pushed yet");
+        assertEq(acp.owed(client), BUDGET, "budget refund credited in acp._owed");
+        assertEq(hook.slashOwed(client), 50e6, "slashed bond credited in hook._slashOwed");
+        assertEq(hook.bondLocked(provider), 0, "bond lock cleared");
+
+        // Client pulls both
         vm.prank(client); acp.withdraw();
+        vm.prank(client); hook.withdrawSlash();
         assertEq(usdc.balanceOf(client) - clientBefore, BUDGET + 50e6, "total = budget + bond");
-        assertEq(hook.bondLocked(provider), 0);
     }
 
     // ── Bond: withdrawBond cannot touch locked bond ──────────────────────────

@@ -15,7 +15,28 @@ import "./interfaces/IACP.sol";
 // K-3: Push → Pull payouts. complete/reject/claimRefund credit _owed[addr].
 //      Recipients call withdraw() to pull their funds.
 //      This prevents a blocklisted client/provider/evaluator from bricking settlement.
+// ERC-8004: Optional ValidationRegistry gate. When validationRegistry != address(0)
+//      and requireValidatedEvaluator == true, createJob verifies the evaluator's
+//      agentId has at least one validation response >= minValidationScore.
+//      This prevents a client from appointing an arbitrary friend as evaluator.
 // ---------------------------------------------------------------------------
+
+/// @dev Minimal interface to the ERC-8004 ValidationRegistryUpgradeable on Arc.
+interface IValidationRegistry {
+    /// @return count  Number of matching validation responses for the agentId.
+    /// @return avgResponse  Average response score (0–100) across matching entries.
+    function getSummary(
+        uint256 agentId,
+        address[] calldata validatorAddresses,
+        string  calldata tag
+    ) external view returns (uint64 count, uint8 avgResponse);
+}
+
+/// @dev Minimal interface to ERC-8004 IdentityRegistry (ownerOf).
+interface IIdentityRegistryACP {
+    function ownerOf(uint256 tokenId) external view returns (address);
+}
+
 contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     using SafeERC20 for IERC20;
 
@@ -40,6 +61,19 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     // K-3: pull-payment balances
     mapping(address => uint256) private _owed;
 
+    // ERC-8004: evaluator validation gate (optional)
+    // When non-zero, createJob with requireValidatedEvaluator=true will check the
+    // evaluator's agentId against this registry.
+    IValidationRegistry     public validationRegistry;
+    IIdentityRegistryACP    public identityRegistry;
+    // Minimum average validation score (0–100) an evaluator must hold.
+    uint8  public minValidationScore;
+    // Minimum number of validation responses required.
+    uint64 public minValidationCount;
+    // When true, ALL new jobs require a validated evaluator.
+    // When false, validation is opt-in per job (evaluatorAgentId > 0 signals opt-in).
+    bool   public requireValidatedEvaluatorGlobal;
+
     // ── Errors ───────────────────────────────────────────────────────────────
     error WrongStatus(JobStatus expected, JobStatus actual);
     error NotClient();
@@ -58,6 +92,8 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     error FeesTooHigh();
     error NothingToWithdraw();
     error EmergencySettleOnlyOwner();
+    error EvaluatorNotValidated(address evaluator, uint256 agentId);
+    error EvaluatorAgentIdNotOwned(address evaluator, uint256 agentId);
 
     // ── Events ───────────────────────────────────────────────────────────────
     event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider, address evaluator, uint256 expiredAt, address hook);
@@ -87,6 +123,9 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     event Withdrawn(address indexed recipient, uint256 amount);
     // H-1: hook failure observability
     event HookFailed(uint256 indexed jobId, address indexed hook, bytes4 selector, bytes reason);
+    // ERC-8004: validation gate
+    event ValidationRegistrySet(address indexed registry, address indexed identityRegistry);
+    event ValidationRequirementSet(uint8 minScore, uint64 minCount, bool globalRequire);
 
     // ── Constructor ──────────────────────────────────────────────────────────
     constructor(address paymentToken_, address treasury_) Ownable(msg.sender) {
@@ -131,6 +170,59 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         emit TrustedFunderSet(funder, trusted);
     }
 
+    // ── ERC-8004: Validation gate ─────────────────────────────────────────────
+
+    /// @notice Set the ERC-8004 ValidationRegistry and IdentityRegistry addresses.
+    ///         Pass address(0) for both to disable the validation gate entirely.
+    ///         Mainnet ValidationRegistry: 0x8004Cc8439f36fd5F9F049D9fF86523Df6dAAB58
+    ///         Mainnet IdentityRegistry:   0x8004A169FB4a3325136EB29fA0ceB6D2e539a432
+    function setValidationRegistry(
+        address validationRegistry_,
+        address identityRegistry_
+    ) external onlyOwner {
+        validationRegistry  = IValidationRegistry(validationRegistry_);
+        identityRegistry    = IIdentityRegistryACP(identityRegistry_);
+        emit ValidationRegistrySet(validationRegistry_, identityRegistry_);
+    }
+
+    /// @notice Configure the validation requirement threshold.
+    /// @param minScore_      Minimum avgResponse (0–100) the evaluator must have.
+    /// @param minCount_      Minimum number of validation responses required.
+    /// @param globalRequire_ If true, ALL new jobs require a validated evaluator.
+    ///                       If false, only jobs that pass evaluatorAgentId > 0 check it.
+    function setValidationRequirement(
+        uint8  minScore_,
+        uint64 minCount_,
+        bool   globalRequire_
+    ) external onlyOwner {
+        minValidationScore             = minScore_;
+        minValidationCount             = minCount_;
+        requireValidatedEvaluatorGlobal = globalRequire_;
+        emit ValidationRequirementSet(minScore_, minCount_, globalRequire_);
+    }
+
+    /// @notice Check if an evaluator address meets the validation requirement.
+    ///         agentId 0 means the evaluator has not registered an ERC-8004 identity — fails.
+    function isValidatedEvaluator(address evaluator, uint256 agentId) public view returns (bool) {
+        if (address(validationRegistry) == address(0)) return true;  // gate disabled
+        if (agentId == 0) return false;  // no registered identity
+        // Verify agentId is owned by the evaluator address
+        if (address(identityRegistry) != address(0)) {
+            try identityRegistry.ownerOf(agentId) returns (address owner) {
+                if (owner != evaluator) return false;
+            } catch {
+                return false;
+            }
+        }
+        // Check validation score
+        address[] memory noFilter = new address[](0);
+        try validationRegistry.getSummary(agentId, noFilter, "") returns (uint64 count, uint8 avg) {
+            return count >= minValidationCount && avg >= minValidationScore;
+        } catch {
+            return false;
+        }
+    }
+
     // ── Fee view ─────────────────────────────────────────────────────────────
 
     function feeSplit(uint256 budget) external view returns (
@@ -159,6 +251,50 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
 
     // ── Core lifecycle ───────────────────────────────────────────────────────
 
+    /// @notice Create a new job.
+    /// @param evaluatorAgentId  ERC-8004 agentId of the evaluator.
+    ///   Pass 0 to skip validation check (only allowed when requireValidatedEvaluatorGlobal == false).
+    ///   When requireValidatedEvaluatorGlobal == true, a non-zero agentId that passes
+    ///   isValidatedEvaluator() is required; zero agentId reverts.
+    function createJob(
+        address provider,
+        address evaluator,
+        uint256 expiredAt,
+        string calldata description,
+        address hook,
+        uint256 evaluatorAgentId
+    ) external returns (uint256 jobId) {
+        if (evaluator == address(0)) revert ZeroAddress();
+        if (expiredAt <= block.timestamp) revert InvalidExpiry();
+        if (!hookWhitelist[hook]) revert HookNotWhitelisted(hook);
+
+        // ERC-8004: validation gate
+        bool requireValidation = requireValidatedEvaluatorGlobal || evaluatorAgentId > 0;
+        if (requireValidation) {
+            if (!isValidatedEvaluator(evaluator, evaluatorAgentId)) {
+                revert EvaluatorNotValidated(evaluator, evaluatorAgentId);
+            }
+        }
+
+        jobId = ++jobCount;
+        _jobs[jobId] = Job({
+            id:          jobId,
+            client:      msg.sender,
+            provider:    provider,
+            evaluator:   evaluator,
+            description: description,
+            budget:      0,
+            expiredAt:   expiredAt,
+            status:      JobStatus.Open,
+            hook:        hook
+        });
+
+        emit JobCreated(jobId, msg.sender, provider, evaluator, expiredAt, hook);
+    }
+
+    /// @notice Legacy createJob without evaluatorAgentId — validation gate not enforced.
+    ///         Reverts when requireValidatedEvaluatorGlobal == true.
+    ///         Kept for ABI backward-compatibility with deployed mainnet contracts.
     function createJob(
         address provider,
         address evaluator,
@@ -166,6 +302,7 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         string calldata description,
         address hook
     ) external returns (uint256 jobId) {
+        if (requireValidatedEvaluatorGlobal) revert EvaluatorNotValidated(evaluator, 0);
         if (evaluator == address(0)) revert ZeroAddress();
         if (expiredAt <= block.timestamp) revert InvalidExpiry();
         if (!hookWhitelist[hook]) revert HookNotWhitelisted(hook);

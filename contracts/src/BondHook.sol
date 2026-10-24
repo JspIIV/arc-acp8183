@@ -53,6 +53,10 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
 
     mapping(uint256 => uint256) public jobBondLocked;  // jobId → locked amount
 
+    // Pull-payment for slashed bonds (Step 3: push→pull for slash payout)
+    // Slashed bond is credited here; client calls withdrawSlash() to receive.
+    mapping(address => uint256) private _slashOwed;
+
     struct SubAgentOrder {
         address subAgent;
         uint256 cost;
@@ -70,6 +74,7 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
     error ZeroAddress();
     error JobNotSettled();       // Step 1: job must be Expired or Rejected
     error NoBondLocked();        // Step 1: nothing to release
+    error NothingToWithdraw();   // Step 3: no slash credit
 
     /// @dev Minimum gas that must remain before attempting a reputation write.
     ///      Below this threshold the call is skipped entirely and ReputationSkipped is emitted.
@@ -84,6 +89,9 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
     event BondLocked(address indexed provider, uint256 jobId, uint256 amount);
     event BondReleased(address indexed provider, uint256 jobId, uint256 amount);
     event BondSlashed(address indexed provider, uint256 jobId, address recipient, uint256 amount);
+    // Step 3: slash credited to recipient pull balance
+    event BondSlashCredited(address indexed recipient, uint256 indexed jobId, uint256 amount);
+    event BondSlashWithdrawn(address indexed recipient, uint256 amount);
     event BondReleasedOnExpiry(address indexed provider, uint256 jobId, uint256 amount);
     event SubAgentPaid(uint256 indexed jobId, address indexed subAgent, uint256 cost);
     event SubAgentPayoutSkipped(uint256 indexed jobId, address indexed subAgent, uint256 cost);
@@ -132,6 +140,21 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
         bondBalance[msg.sender] -= amount;
         usdc.safeTransfer(msg.sender, amount);
         emit BondWithdrawn(msg.sender, amount);
+    }
+
+    /// @notice Step 3: Pull slashed bond credited to msg.sender.
+    ///         Prevents USDC blocklist from bricking slash settlement.
+    function withdrawSlash() external nonReentrant {
+        uint256 amount = _slashOwed[msg.sender];
+        if (amount == 0) revert NothingToWithdraw();
+        _slashOwed[msg.sender] = 0;
+        usdc.safeTransfer(msg.sender, amount);
+        emit BondSlashWithdrawn(msg.sender, amount);
+    }
+
+    /// @notice View pending slash balance for an address.
+    function slashOwed(address recipient) external view returns (uint256) {
+        return _slashOwed[recipient];
     }
 
     /// @notice Step 1 — release a bond locked against a job that has expired or been rejected.
@@ -269,8 +292,12 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
         bondLocked[job.provider]  -= locked;
         jobBondLocked[jobId]       = 0;
 
-        usdc.safeTransfer(job.client, locked);
+        // Step 3: push → pull. Credit slash to client's _slashOwed instead of
+        // direct safeTransfer. This prevents a blocklisted client from making
+        // _afterReject (and therefore reject()) revert forever.
+        _slashOwed[job.client] += locked;
         emit BondSlashed(job.provider, jobId, job.client, locked);
+        emit BondSlashCredited(job.client, jobId, locked);
 
         _recordReputation(job.provider, jobId, int128(-1));
         delete subAgentOrders[jobId];

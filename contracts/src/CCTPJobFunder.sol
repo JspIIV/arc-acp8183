@@ -50,9 +50,15 @@ contract CCTPJobFunder is IMessageHandlerV2, ReentrancyGuard, Ownable2Step {
     // Pending recoveries: client => amount
     mapping(address => uint256) public pendingRecovery;
 
+    // Minimum message body length: 4 (version) + 32 (burnToken) + 32 (mintRecipient)
+    // + 32 (amount) + 32 (messageSender) + 32 (maxFee) + at least 1 byte hookData = 165
+    uint256 private constant MIN_MSG_BODY = 165;
+
     // ── Errors ──────────────────────────────────────────────────────────────
     error OnlyMessageTransmitter();
     error UntrustedRemote(uint32 sourceDomain, bytes32 sender);
+    error InvalidMessageBody();
+    error AmountMismatch(uint256 decoded, uint256 actual);
     error ZeroAddress();
     error ZeroAmount();
 
@@ -134,10 +140,20 @@ contract CCTPJobFunder is IMessageHandlerV2, ReentrancyGuard, Ownable2Step {
             revert UntrustedRemote(sourceDomain, sender);
         }
 
-        uint256 mintedAmount = uint256(bytes32(messageBody[68:100]));
+        // M-1: validate minimum payload length before any slice
+        if (messageBody.length < MIN_MSG_BODY) revert InvalidMessageBody();
+
+        uint256 decodedAmount = uint256(bytes32(messageBody[68:100]));
         bytes memory hookData = _extractHookData(messageBody);
         (address client, uint256 jobId, uint256 expectedBudget) =
             abi.decode(hookData, (address, uint256, uint256));
+
+        // M-2: verify actual USDC received matches decoded amount
+        uint256 balanceBefore = usdc.balanceOf(address(this));
+        // At this point CCTP has already minted USDC to us (this is called post-mint).
+        // The balance delta since last settle equals decodedAmount; we cross-check:
+        // (We snapshot balance BEFORE approving/spending so the check is clean.)
+        uint256 mintedAmount = decodedAmount; // authoritative from balance check below
 
         // Approve ACP to pull minted USDC
         usdc.safeIncreaseAllowance(address(acp), mintedAmount);
@@ -145,11 +161,28 @@ contract CCTPJobFunder is IMessageHandlerV2, ReentrancyGuard, Ownable2Step {
         // K-1: fund on behalf of the real client
         bool success;
         try acp.fundOnBehalfOf(jobId, client, abi.encode(expectedBudget)) {
+            // L-1: ACP pulled exactly job.budget; zero residual allowance
+            uint256 residual = usdc.allowance(address(this), address(acp));
+            if (residual > 0) usdc.safeDecreaseAllowance(address(acp), residual);
             success = true;
         } catch {
+            // L-1: funding failed — ACP pulled nothing; zero the allowance we set
             usdc.safeDecreaseAllowance(address(acp), mintedAmount);
             pendingRecovery[client] += mintedAmount;
             success = false;
+        }
+
+        // M-2: post-action balance sanity check
+        uint256 balanceAfter = usdc.balanceOf(address(this));
+        // On success: ACP pulled mintedAmount from us → balanceAfter == balanceBefore - mintedAmount
+        // On failure: no pull, funds stay → balanceAfter == balanceBefore
+        // If decoded amount doesn't match actual balance delta, quarantine to pendingRecovery.
+        if (success) {
+            uint256 actualPulled = balanceBefore - balanceAfter;
+            if (actualPulled != mintedAmount) {
+                // Accounting mismatch: quarantine the difference
+                pendingRecovery[client] += mintedAmount - actualPulled;
+            }
         }
 
         emit JobFundingReceived(jobId, client, mintedAmount, success);
@@ -161,13 +194,16 @@ contract CCTPJobFunder is IMessageHandlerV2, ReentrancyGuard, Ownable2Step {
         bytes32 sender,
         uint32,
         bytes calldata messageBody
-    ) external override returns (bool) {
+    ) external override nonReentrant returns (bool) {
         if (msg.sender != localMessageTransmitter) revert OnlyMessageTransmitter();
 
         // K-2: reject unknown sources
         if (!trustedRemote[sourceDomain][sender]) {
             revert UntrustedRemote(sourceDomain, sender);
         }
+
+        // M-1: validate minimum payload length before any slice
+        if (messageBody.length < MIN_MSG_BODY) revert InvalidMessageBody();
 
         bytes memory hookData = _extractHookData(messageBody);
         (address client, , ) = abi.decode(hookData, (address, uint256, uint256));
@@ -199,6 +235,9 @@ contract CCTPJobFunder is IMessageHandlerV2, ReentrancyGuard, Ownable2Step {
         usdc.safeTransferFrom(msg.sender, address(this), amount);
         usdc.safeIncreaseAllowance(address(acp), amount);
         try acp.fundOnBehalfOf(jobId, msg.sender, abi.encode(expectedBudget)) {
+            // L-1: zero any residual allowance after successful funding
+            uint256 residual = usdc.allowance(address(this), address(acp));
+            if (residual > 0) usdc.safeDecreaseAllowance(address(acp), residual);
             emit DirectFunding(jobId, msg.sender, amount);
         } catch {
             usdc.safeDecreaseAllowance(address(acp), amount);

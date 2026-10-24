@@ -208,7 +208,13 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
             // uri is ignored here — AgenticCommerce.submit reads it for the event.
             (address subAgent, uint256 cost,) = abi.decode(optParams, (address, uint256, string));
             if (subAgent == job.provider) revert SubAgentIsProvider();
-            if (cost >= job.budget) revert SubAgentCostExceedsProviderShare();
+
+            // M-3: cap sub-agent cost against provider's NET share (budget minus fees),
+            // not raw budget. Prevents provider from committing to pay a sub-agent
+            // more than they will actually receive from the ACP escrow.
+            (,, uint256 providerNetShare) = acp.feeSplit(job.budget);
+            if (cost >= providerNetShare) revert SubAgentCostExceedsProviderShare();
+
             subAgentOrders[jobId] = SubAgentOrder({ subAgent: subAgent, cost: cost });
         }
 

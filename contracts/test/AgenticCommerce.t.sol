@@ -167,7 +167,7 @@ contract ACPBase is Test {
 // ===========================================================================
 contract AgenticCommerceTest is ACPBase {
 
-    // ── 1. Full lifecycle + exact fee split ──────────────────────────────────
+    // ── 1. Full lifecycle + exact fee split (K-3: pull payments) ────────────
     function test_FullLifecycle_FeeSplit() public {
         uint256 jobId = _createAndSubmit();
 
@@ -175,27 +175,34 @@ contract AgenticCommerceTest is ACPBase {
         uint256 evaluatorFee = (BUDGET * 100) / 10_000;   // 1 USDC
         uint256 providerPay  = BUDGET - platformFee - evaluatorFee;
 
-        uint256 providerBefore  = usdc.balanceOf(provider);
-        uint256 evaluatorBefore = usdc.balanceOf(evaluator);
-        uint256 treasuryBefore  = usdc.balanceOf(treasury);
-
         vm.prank(evaluator);
         acp.complete(jobId, bytes32("looks good"), "");
 
-        assertEq(usdc.balanceOf(provider)  - providerBefore,  providerPay,   "provider pay");
-        assertEq(usdc.balanceOf(evaluator) - evaluatorBefore, evaluatorFee,  "evaluator fee");
-        assertEq(usdc.balanceOf(treasury)  - treasuryBefore,  platformFee,   "platform fee");
-        assertEq(platformFee + evaluatorFee + providerPay, BUDGET,           "fee sum == budget");
+        // K-3: funds are now in _owed, not yet in wallet
+        assertEq(acp.owed(provider),  providerPay,   "provider owed");
+        assertEq(acp.owed(evaluator), evaluatorFee,  "evaluator owed");
+        assertEq(acp.owed(treasury),  platformFee,   "treasury owed");
+        assertEq(platformFee + evaluatorFee + providerPay, BUDGET, "fee sum == budget");
+
+        // withdraw and verify actual token receipt
+        uint256 pb = usdc.balanceOf(provider);
+        vm.prank(provider);  acp.withdraw();
+        assertEq(usdc.balanceOf(provider) - pb, providerPay, "provider received");
+
+        uint256 eb = usdc.balanceOf(evaluator);
+        vm.prank(evaluator); acp.withdraw();
+        assertEq(usdc.balanceOf(evaluator) - eb, evaluatorFee, "evaluator received");
     }
 
     // ── 2. No sub-agent: only provider + fees ────────────────────────────────
     function test_NoSubAgent_OnlyProviderAndFee() public {
         uint256 jobId = _createAndSubmit();
-        uint256 providerBefore = usdc.balanceOf(provider);
         vm.prank(evaluator);
         acp.complete(jobId, bytes32("ok"), "");
         uint256 expectedPay = BUDGET - (BUDGET * 200 / 10_000) - (BUDGET * 100 / 10_000);
-        assertEq(usdc.balanceOf(provider) - providerBefore, expectedPay);
+        // K-3: check owed, then withdraw
+        assertEq(acp.owed(provider), expectedPay);
+        assertEq(acp.owed(evaluator), (BUDGET * 100 / 10_000), "evaluator fee owed");
     }
 
     // ── 3. Only evaluator can complete a Submitted job ───────────────────────
@@ -229,14 +236,17 @@ contract AgenticCommerceTest is ACPBase {
         acp.reject(jobId, bytes32("x"), "");
     }
 
-    // ── 6. claimRefund by stranger after expiry returns escrow ───────────────
+    // ── 6. claimRefund by stranger after expiry returns escrow (K-3: pull) ────
     function test_ClaimRefund_Stranger_AfterExpiry() public {
         uint256 jobId = _createFundedJob();
         vm.warp(block.timestamp + EXPIRY_OFFSET + 1);
-        uint256 clientBefore = usdc.balanceOf(client);
         vm.prank(stranger);
         acp.claimRefund(jobId);
-        assertEq(usdc.balanceOf(client) - clientBefore, BUDGET, "full refund");
+        // K-3: credit in _owed, client must withdraw
+        assertEq(acp.owed(client), BUDGET, "full refund credited");
+        uint256 cb = usdc.balanceOf(client);
+        vm.prank(client); acp.withdraw();
+        assertEq(usdc.balanceOf(client) - cb, BUDGET, "full refund received");
     }
 
     // ── 7. claimRefund MUST NOT call hooks (architectural) ───────────────────
@@ -249,11 +259,13 @@ contract AgenticCommerceTest is ACPBase {
         vm.prank(client);
         acp.fund(jobId, "");
         vm.warp(expiry + 1);
-
-        uint256 clientBefore = usdc.balanceOf(client);
         vm.prank(stranger);
         acp.claimRefund(jobId);
-        assertEq(usdc.balanceOf(client) - clientBefore, BUDGET, "refund ok");
+        // K-3: credit in _owed
+        assertEq(acp.owed(client), BUDGET, "refund credited");
+        uint256 cb = usdc.balanceOf(client);
+        vm.prank(client); acp.withdraw();
+        assertEq(usdc.balanceOf(client) - cb, BUDGET, "refund received");
     }
 
     // ── 8. fund with stale expectedBudget reverts BudgetMoved ────────────────
@@ -277,7 +289,12 @@ contract AgenticCommerceTest is ACPBase {
 
     // ── 10. zero USDC after full settlement ──────────────────────────────────
     function test_ZeroBalance_AfterSettlement() public {
-        test_FullLifecycle_FeeSplit();
+        // K-3: after complete + all parties withdraw, ACP holds zero
+        uint256 jobId = _createAndSubmit();
+        vm.prank(evaluator); acp.complete(jobId, bytes32("ok"), "");
+        vm.prank(provider);  acp.withdraw();
+        vm.prank(evaluator); acp.withdraw();
+        vm.prank(treasury);  acp.withdraw();
         assertEq(usdc.balanceOf(address(acp)), 0);
     }
 
@@ -288,13 +305,16 @@ contract AgenticCommerceTest is ACPBase {
         acp.claimRefund(jobId);
     }
 
-    // ── 12. reject on Submitted refunds client ───────────────────────────────
+    // ── 12. reject on Submitted refunds client (K-3: pull) ──────────────────
     function test_Reject_Submitted_RefundClient() public {
         uint256 jobId = _createAndSubmit();
-        uint256 clientBefore = usdc.balanceOf(client);
         vm.prank(evaluator);
         acp.reject(jobId, bytes32("bad work"), "");
-        assertEq(usdc.balanceOf(client) - clientBefore, BUDGET);
+        // K-3: credit in _owed
+        assertEq(acp.owed(client), BUDGET, "refund credited");
+        uint256 cb = usdc.balanceOf(client);
+        vm.prank(client); acp.withdraw();
+        assertEq(usdc.balanceOf(client) - cb, BUDGET, "refund received");
     }
 
     // ── 13. setProvider reverts if already set ───────────────────────────────
@@ -388,7 +408,7 @@ contract BondHookTest is ACPBase {
         assertEq(hook.bondLocked(provider), 0, "bond released");
     }
 
-    // ── Bond: reject sends locked bond to client ──────────────────────────────
+    // ── Bond: reject sends locked bond to client (K-3: budget via pull, bond direct) ──
     function test_Reject_SendsBondToClient() public {
         uint256 jobId = _createHookedFundedJob();
         vm.prank(provider);
@@ -398,7 +418,11 @@ contract BondHookTest is ACPBase {
         vm.prank(evaluator);
         acp.reject(jobId, bytes32("bad work"), "");
 
-        assertEq(usdc.balanceOf(client) - clientBefore, BUDGET + 50e6, "budget refund + slashed bond");
+        // Budget refund goes to _owed (K-3); slashed bond is pushed directly by BondHook
+        assertEq(usdc.balanceOf(client) - clientBefore, 50e6, "slashed bond received directly");
+        assertEq(acp.owed(client), BUDGET, "budget refund credited in _owed");
+        vm.prank(client); acp.withdraw();
+        assertEq(usdc.balanceOf(client) - clientBefore, BUDGET + 50e6, "total = budget + bond");
         assertEq(hook.bondLocked(provider), 0);
     }
 
@@ -452,8 +476,7 @@ contract BondHookTest is ACPBase {
         vm.prank(provider);
         usdc.approve(address(hook), 0);
 
-        uint256 subBefore     = usdc.balanceOf(subAgent);
-        uint256 providerBefore = usdc.balanceOf(provider);
+        uint256 subBefore = usdc.balanceOf(subAgent);
 
         // Expect SubAgentPayoutSkipped event
         vm.expectEmit(true, true, false, true);
@@ -462,11 +485,14 @@ contract BondHookTest is ACPBase {
         vm.prank(evaluator);
         acp.complete(jobId, bytes32("done"), "");  // must NOT revert
 
-        // Sub-agent received nothing, but completion succeeded
+        // Sub-agent received nothing
         assertEq(usdc.balanceOf(subAgent) - subBefore, 0, "sub-agent not paid");
-        // Provider received their share
+        // K-3: provider pay is in _owed
         uint256 expectedProviderPay = BUDGET - (BUDGET * 200 / 10_000) - (BUDGET * 100 / 10_000);
-        assertEq(usdc.balanceOf(provider) - providerBefore, expectedProviderPay, "provider paid");
+        assertEq(acp.owed(provider), expectedProviderPay, "provider owed");
+        uint256 pb = usdc.balanceOf(provider);
+        vm.prank(provider); acp.withdraw();
+        assertEq(usdc.balanceOf(provider) - pb, expectedProviderPay, "provider paid");
     }
 
     // ── Step 3: submit with empty optParams (no sub-agent) ──────────────────
@@ -577,13 +603,17 @@ contract BondHookTest is ACPBase {
         (repCallsBefore); // silence unused warning
     }
 
-    // ── Zero balance after full settlement ────────────────────────────────────
+    // ── Zero balance after full settlement (K-3: after all withdrawals) ────────
     function test_ZeroBalance_AfterHookedSettlement() public {
         uint256 jobId = _createHookedFundedJob();
         vm.prank(provider);
         acp.submit(jobId, bytes32("deliverable"), "");
         vm.prank(evaluator);
         acp.complete(jobId, bytes32("done"), "");
+        // K-3: funds sit in _owed; ACP still holds USDC until withdrawals
+        vm.prank(provider);  acp.withdraw();
+        vm.prank(evaluator); acp.withdraw();
+        vm.prank(treasury);  acp.withdraw();
         assertEq(usdc.balanceOf(address(acp)), 0, "acp zero");
     }
 
@@ -691,11 +721,22 @@ contract CCTPJobFunderTest is ACPBase {
     CCTPJobFunder funder;
     address mockMessenger = makeAddr("tokenMessengerV2");
 
+    uint32  constant SOURCE_DOMAIN = 1;
+    bytes32 constant TRUSTED_SENDER = bytes32(uint256(0xBEEF));
+
     function setUp() public override {
         super.setUp();
         transmitter = new MockMessageTransmitter();
         funder = new CCTPJobFunder(address(usdc), address(acp), mockMessenger, address(transmitter));
         usdc.mint(address(funder), 10_000e6);
+
+        // K-1: register funder as trusted in ACP
+        vm.prank(owner);
+        acp.setTrustedFunder(address(funder), true);
+
+        // K-2: register trusted remote
+        vm.prank(address(this));  // funder owner is this contract (deployer)
+        funder.setTrustedRemote(SOURCE_DOMAIN, TRUSTED_SENDER, true);
     }
 
     /// @dev Build a minimal BurnMessageV2 body with amount and hookData
@@ -707,29 +748,28 @@ contract CCTPJobFunderTest is ACPBase {
         return bytes.concat(body, abi.encode(hookData));
     }
 
-    // ── CCTP: funding credits the right job ──────────────────────────────────
+    // ── CCTP K-1: funding via fundOnBehalfOf credits the right job ───────────
     function test_CCTP_FundsCorrectJob() public {
-        // Job client = funder (since fund() requires msg.sender == job.client)
-        vm.prank(address(funder));
+        // K-1: job client is `client`, NOT funder — fundOnBehalfOf handles this
+        vm.prank(client);
         uint256 jobId = acp.createJob(provider, evaluator, block.timestamp + EXPIRY_OFFSET, "cctp job", address(0));
         vm.prank(provider);
         acp.setBudget(jobId, BUDGET, "");
 
-        bytes memory hookData = abi.encode(address(funder), jobId, BUDGET);
+        // hookData encodes the real client address
+        bytes memory hookData = abi.encode(client, jobId, BUDGET);
         bytes memory msgBody  = _buildMessageBody(BUDGET, hookData);
 
         vm.prank(address(transmitter));
-        bool ok = funder.handleReceiveFinalizedMessage(1, bytes32(0), 1000, msgBody);
+        bool ok = funder.handleReceiveFinalizedMessage(SOURCE_DOMAIN, TRUSTED_SENDER, 1000, msgBody);
         assertTrue(ok);
 
-        assertEq(uint8(acp.getJob(jobId).status), uint8(IAgenticCommerce.JobStatus.Funded));
+        assertEq(uint8(acp.getJob(jobId).status), uint8(IAgenticCommerce.JobStatus.Funded), "job funded");
     }
 
     // ── CCTP: failed funding → client can recover ─────────────────────────────
-    // Note: handleReceiveFinalizedMessage always returns true to the CCTP protocol.
-    // When ACP.fund() fails internally, USDC is credited to pendingRecovery[client].
     function test_CCTP_FailedFunding_ClientCanRecover() public {
-        // Job with no provider → ACP.fund() will revert with ProviderNotSet
+        // Job with no provider → ACP.fundOnBehalfOf() will revert with ProviderNotSet
         vm.prank(client);
         uint256 jobId = acp.createJob(address(0), evaluator, block.timestamp + EXPIRY_OFFSET, "fail", address(0));
 
@@ -738,16 +778,12 @@ contract CCTPJobFunderTest is ACPBase {
 
         uint256 clientBefore = usdc.balanceOf(client);
         vm.prank(address(transmitter));
-        bool ok = funder.handleReceiveFinalizedMessage(1, bytes32(0), 1000, msgBody);
+        bool ok = funder.handleReceiveFinalizedMessage(SOURCE_DOMAIN, TRUSTED_SENDER, 1000, msgBody);
         assertTrue(ok, "CCTP handler always returns true");
 
-        // Job should NOT be Funded
         assertEq(uint8(acp.getJob(jobId).status), uint8(IAgenticCommerce.JobStatus.Open), "job still Open");
-
-        // Pending recovery should be set for client
         assertEq(funder.pendingRecovery(client), BUDGET, "pending recovery set");
 
-        // Client can recover
         vm.prank(client);
         funder.recoverFunds();
         assertEq(usdc.balanceOf(client) - clientBefore, BUDGET, "recovered");
@@ -758,6 +794,31 @@ contract CCTPJobFunderTest is ACPBase {
         bytes memory msgBody = _buildMessageBody(BUDGET, abi.encode(client, 1, BUDGET));
         vm.prank(stranger);
         vm.expectRevert();
-        funder.handleReceiveFinalizedMessage(1, bytes32(0), 1000, msgBody);
+        funder.handleReceiveFinalizedMessage(SOURCE_DOMAIN, TRUSTED_SENDER, 1000, msgBody);
+    }
+
+    // ── K-2: untrusted remote is rejected ────────────────────────────────────
+    function test_CCTP_UntrustedRemote_Reverts() public {
+        bytes memory msgBody = _buildMessageBody(BUDGET, abi.encode(client, 1, BUDGET));
+        vm.prank(address(transmitter));
+        vm.expectRevert(abi.encodeWithSelector(CCTPJobFunder.UntrustedRemote.selector, uint32(99), bytes32(0)));
+        funder.handleReceiveFinalizedMessage(99, bytes32(0), 1000, msgBody);
+    }
+
+    // ── K-3: zero-balance after full settlement ───────────────────────────────
+    function test_ZeroBalance_AfterFullSettlement() public {
+        vm.prank(client);
+        uint256 jobId = acp.createJob(provider, evaluator, block.timestamp + EXPIRY_OFFSET, "j", address(0));
+        vm.prank(provider); acp.setBudget(jobId, BUDGET, "");
+        vm.prank(client);   acp.fund(jobId, "");
+        vm.prank(provider); acp.submit(jobId, bytes32("d"), "");
+        vm.prank(evaluator); acp.complete(jobId, bytes32("ok"), "");
+
+        // Withdraw all owed balances
+        vm.prank(provider);  acp.withdraw();
+        vm.prank(evaluator); acp.withdraw();
+        vm.prank(treasury);  acp.withdraw();
+
+        assertEq(usdc.balanceOf(address(acp)), 0, "ACP holds zero USDC");
     }
 }

@@ -8,21 +8,13 @@ import "@openzeppelin/contracts/access/Ownable2Step.sol";
 import "./interfaces/IACP.sol";
 
 // ---------------------------------------------------------------------------
-// AgenticCommerce — faithful ERC-8183 implementation
+// AgenticCommerce — ERC-8183 implementation
 //
-// Spec:  https://eips.ethereum.org/EIPS/eip-8183
-// Ref:   0x0747EEf0706327138c69792bF28Cd525089e4583 (Arc Testnet)
-//
-// Changes vs first draft aligned to the reference implementation:
-//   • submit: bytes32 deliverable  (spec §submit)
-//   • complete/reject: bytes32 reason  (spec §complete, §reject)
-//   • setPlatformFee(feeBP_, treasury_) two-arg  (spec §fees, ref impl)
-//   • setBudget: provider-only  (ref impl — client+provider allowed by spec
-//     but reference restricts to provider; we match the reference)
-//   • Events: JobFunded(jobId, client, amount), JobSubmitted(jobId, provider, deliverable),
-//             JobCompleted(jobId, evaluator, reason), JobRejected(jobId, rejector, reason)
-//   • Step 3: hooks receive optParams, not msg.data
-//   • Step 5: combined fee cap 20%, dead _isEscrowed removed, initialize cleaned up
+// K-1: fundOnBehalfOf(jobId, client, optParams) — trusted funders (CCTPJobFunder)
+//      can fund a job on behalf of a client without needing to be the job.client.
+// K-3: Push → Pull payouts. complete/reject/claimRefund credit _owed[addr].
+//      Recipients call withdraw() to pull their funds.
+//      This prevents a blocklisted client/provider/evaluator from bricking settlement.
 // ---------------------------------------------------------------------------
 contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     using SafeERC20 for IERC20;
@@ -31,22 +23,29 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     IERC20  public immutable paymentToken;
     address public           treasury;
 
-    uint256 public platformFeeBps;    // platform fee in basis points
-    uint256 public evaluatorFeeBps;   // evaluator fee in basis points
+    uint256 public platformFeeBps;
+    uint256 public evaluatorFeeBps;
 
-    uint256 public constant BPS_DENOM     = 10_000;
-    uint256 public constant MAX_FEE_BPS   = 2_000;  // Step 5: combined cap 20%
+    uint256 public constant BPS_DENOM   = 10_000;
+    uint256 public constant MAX_FEE_BPS = 2_000;  // combined cap 20%
 
     mapping(uint256 => Job) private _jobs;
     uint256 public jobCount;
 
     mapping(address => bool) public hookWhitelist;
 
+    // K-1: trusted funders that may call fundOnBehalfOf
+    mapping(address => bool) public trustedFunder;
+
+    // K-3: pull-payment balances
+    mapping(address => uint256) private _owed;
+
     // ── Errors ───────────────────────────────────────────────────────────────
     error WrongStatus(JobStatus expected, JobStatus actual);
     error NotClient();
     error NotProvider();
     error NotEvaluator();
+    error NotTrustedFunder();
     error ProviderNotSet();
     error ProviderAlreadySet();
     error BudgetZero();
@@ -57,46 +56,45 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     error HookNotWhitelisted(address hook);
     error ZeroAddress();
     error FeesTooHigh();
+    error NothingToWithdraw();
 
-    // ── Events (ERC-8183 §Events — matched to reference implementation) ──────
-    event JobCreated(
-        uint256 indexed jobId,
-        address indexed client,
-        address indexed provider,
-        address evaluator,
-        uint256 expiredAt,
-        address hook
-    );
+    // ── Events ───────────────────────────────────────────────────────────────
+    event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider, address evaluator, uint256 expiredAt, address hook);
     event ProviderSet(uint256 indexed jobId, address indexed provider);
     event BudgetSet(uint256 indexed jobId, uint256 amount);
     event JobFunded(uint256 indexed jobId, address indexed client, uint256 amount);
-    /// @notice uri is the content-addressed location of the deliverable (e.g. ipfs://CID or https://...).
+    /// @notice uri is the content-addressed location of the deliverable (e.g. ipfs://CID).
     ///         Empty string when the provider did not encode a URI in optParams.
     ///         Integrity: keccak256(content) MUST equal deliverable.
     event JobSubmitted(uint256 indexed jobId, address indexed provider, bytes32 deliverable, string uri);
     event JobCompleted(uint256 indexed jobId, address indexed evaluator, bytes32 reason);
     event JobRejected(uint256 indexed jobId, address indexed rejector, bytes32 reason);
     event JobExpired(uint256 indexed jobId);
+    /// @notice K-3: funds credited to recipient; call withdraw() to receive them.
+    event PaymentCredited(uint256 indexed jobId, address indexed recipient, uint256 amount);
+    event EvaluatorFeeCredited(uint256 indexed jobId, address indexed evaluator, uint256 amount);
+    event RefundCredited(uint256 indexed jobId, address indexed client, uint256 amount);
+    // Legacy aliases kept for indexer compatibility
     event PaymentReleased(uint256 indexed jobId, address indexed provider, uint256 amount);
     event EvaluatorFeePaid(uint256 indexed jobId, address indexed evaluator, uint256 amount);
     event Refunded(uint256 indexed jobId, address indexed client, uint256 amount);
     event HookWhitelistUpdated(address indexed hook, bool allowed);
+    event TrustedFunderSet(address indexed funder, bool trusted);
     event TreasurySet(address treasury);
     event PlatformFeeSet(uint256 bps);
     event EvaluatorFeeSet(uint256 bps);
+    event Withdrawn(address indexed recipient, uint256 amount);
 
     // ── Constructor ──────────────────────────────────────────────────────────
     constructor(address paymentToken_, address treasury_) Ownable(msg.sender) {
         if (paymentToken_ == address(0) || treasury_ == address(0)) revert ZeroAddress();
         paymentToken = IERC20(paymentToken_);
         treasury     = treasury_;
-        // address(0) hook is always allowed (no-hook path)
         hookWhitelist[address(0)] = true;
     }
 
     // ── Admin ────────────────────────────────────────────────────────────────
 
-    /// @notice Set platform fee and treasury (ERC-8183 ref: setPlatformFee(feeBP_, treasury_))
     function setPlatformFee(uint256 feeBP_, address treasury_) external onlyOwner {
         if (treasury_ == address(0)) revert ZeroAddress();
         if (feeBP_ + evaluatorFeeBps > MAX_FEE_BPS) revert FeesTooHigh();
@@ -123,9 +121,15 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         emit TreasurySet(treasury_);
     }
 
+    /// @notice K-1: register / deregister a trusted funder contract.
+    function setTrustedFunder(address funder, bool trusted) external onlyOwner {
+        if (funder == address(0)) revert ZeroAddress();
+        trustedFunder[funder] = trusted;
+        emit TrustedFunderSet(funder, trusted);
+    }
+
     // ── Fee view ─────────────────────────────────────────────────────────────
 
-    /// @notice Preview fee split for a given budget.
     function feeSplit(uint256 budget) external view returns (
         uint256 platformFee, uint256 evaluatorFee, uint256 providerPay
     ) {
@@ -134,9 +138,24 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         providerPay  = budget - platformFee - evaluatorFee;
     }
 
+    // ── K-3: pull payment ────────────────────────────────────────────────────
+
+    /// @notice Pull funds credited to msg.sender.
+    function withdraw() external nonReentrant {
+        uint256 amount = _owed[msg.sender];
+        if (amount == 0) revert NothingToWithdraw();
+        _owed[msg.sender] = 0;
+        paymentToken.safeTransfer(msg.sender, amount);
+        emit Withdrawn(msg.sender, amount);
+    }
+
+    /// @notice View pending balance.
+    function owed(address recipient) external view returns (uint256) {
+        return _owed[recipient];
+    }
+
     // ── Core lifecycle ───────────────────────────────────────────────────────
 
-    /// @notice Create a new job. provider may be address(0) for later assignment.
     function createJob(
         address provider,
         address evaluator,
@@ -150,21 +169,20 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
 
         jobId = ++jobCount;
         _jobs[jobId] = Job({
-            id:        jobId,
-            client:    msg.sender,
-            provider:  provider,
-            evaluator: evaluator,
+            id:          jobId,
+            client:      msg.sender,
+            provider:    provider,
+            evaluator:   evaluator,
             description: description,
-            budget:    0,
-            expiredAt: expiredAt,
-            status:    JobStatus.Open,
-            hook:      hook
+            budget:      0,
+            expiredAt:   expiredAt,
+            status:      JobStatus.Open,
+            hook:        hook
         });
 
         emit JobCreated(jobId, msg.sender, provider, evaluator, expiredAt, hook);
     }
 
-    /// @notice Client sets or changes the provider while the job is Open and provider is not yet set.
     function setProvider(uint256 jobId, address provider, bytes calldata optParams) external {
         Job storage job = _requireJob(jobId);
         _requireStatus(job, JobStatus.Open);
@@ -177,7 +195,6 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         _hookAfter(job.hook, jobId, msg.sig, optParams);
     }
 
-    /// @notice Provider sets the budget (ERC-8183: provider-only per reference impl).
     function setBudget(uint256 jobId, uint256 amount, bytes calldata optParams) external nonReentrant {
         Job storage job = _requireJob(jobId);
         _requireStatus(job, JobStatus.Open);
@@ -188,52 +205,47 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         _hookAfter(job.hook, jobId, msg.sig, optParams);
     }
 
-    /// @notice Client funds escrow.
-    ///         optParams (optional): if non-empty, abi.decode as uint256 expectedBudget.
-    ///         If expectedBudget != job.budget, reverts with BudgetMoved.
+    /// @notice Client funds escrow directly.
     function fund(uint256 jobId, bytes calldata optParams) external nonReentrant {
+        _fundFor(jobId, msg.sender, optParams);
+    }
+
+    /// @notice K-1: trusted funder funds escrow on behalf of client.
+    ///         Only whitelisted addresses (CCTPJobFunder) may call this.
+    function fundOnBehalfOf(uint256 jobId, address client, bytes calldata optParams) external nonReentrant {
+        if (!trustedFunder[msg.sender]) revert NotTrustedFunder();
+        _fundFor(jobId, client, optParams);
+    }
+
+    function _fundFor(uint256 jobId, address payer, bytes calldata optParams) internal {
         Job storage job = _requireJob(jobId);
         _requireStatus(job, JobStatus.Open);
-        if (msg.sender != job.client) revert NotClient();
+        if (payer != job.client) revert NotClient();
         if (job.provider == address(0)) revert ProviderNotSet();
         if (job.budget == 0) revert BudgetZero();
         if (block.timestamp >= job.expiredAt) revert JobExpiredAlready();
 
-        // BudgetMoved guard: decode expected budget from optParams if provided
         if (optParams.length > 0) {
             uint256 expectedBudget = abi.decode(optParams, (uint256));
             if (expectedBudget != job.budget) revert BudgetMoved(expectedBudget, job.budget);
         }
 
-        _hookBefore(job.hook, jobId, msg.sig, optParams);
+        _hookBefore(job.hook, jobId, IAgenticCommerce.fund.selector, optParams);
         job.status = JobStatus.Funded;
         paymentToken.safeTransferFrom(msg.sender, address(this), job.budget);
-        emit JobFunded(jobId, msg.sender, job.budget);
-        _hookAfter(job.hook, jobId, msg.sig, optParams);
+        emit JobFunded(jobId, payer, job.budget);
+        _hookAfter(job.hook, jobId, IAgenticCommerce.fund.selector, optParams);
     }
 
-    /// @notice Provider submits deliverable. deliverable is bytes32 per ERC-8183 spec.
-    /// @dev    optParams (optional): abi.encode(string uri) — content-addressed location
-    ///         of the deliverable. The evaluator fetches the content from uri and MUST
-    ///         verify keccak256(content) == deliverable before calling complete().
-    ///         Supported schemes: ipfs://<CID>, https://<url>, ar://<txid>.
-    ///         If optParams is empty the uri is recorded as "" and integrity is verified
-    ///         through an out-of-band channel agreed between provider and evaluator.
     function submit(uint256 jobId, bytes32 deliverable, bytes calldata optParams) external nonReentrant {
         Job storage job = _requireJob(jobId);
         _requireStatus(job, JobStatus.Funded);
         if (msg.sender != job.provider) revert NotProvider();
         _hookBefore(job.hook, jobId, msg.sig, optParams);
         job.status = JobStatus.Submitted;
-        // Decode delivery URI from optParams when provided.
-        // optParams format (all fields optional, encode only what you need):
-        //   - URI only:              abi.encode("", "", "ipfs://CID")  [address(0), 0, uri]
-        //   - Sub-agent only:        abi.encode(subAgent, cost, "")
-        //   - Both:                  abi.encode(subAgent, cost, uri)
-        // BondHook's _beforeSubmit reads the same optParams for sub-agent data.
+
         string memory uri = "";
         if (optParams.length > 0) {
-            // Try to decode as (address, uint256, string); fall back to empty uri on failure.
             try this._decodeSubmitURI(optParams) returns (string memory u) {
                 uri = u;
             } catch {}
@@ -242,13 +254,9 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         _hookAfter(job.hook, jobId, msg.sig, optParams);
     }
 
-    /// @notice Evaluator completes a Submitted job. reason is bytes32 per ERC-8183 spec.
-    /// @dev    GAS WARNING: a hooked job with a registered ERC-8004 agentId costs roughly
-    ///         350k gas. Automatic gas estimation can under-estimate this because the
-    ///         BondHook calls the ReputationRegistry in an external call whose cost depends
-    ///         on registry state. Always send complete() with an explicit gas limit of at
-    ///         least 400_000 for hooked jobs to avoid the out-of-gas failure observed on
-    ///         mainnet (tx 0xac1482c746ef1548ebfec55ac940257f458ac198c2e0be74e3e9a8918df4cec3).
+    /// @dev GAS WARNING: a hooked job with a registered ERC-8004 agentId costs roughly
+    ///      350k gas. Automatic estimation can under-estimate. Send complete() with an
+    ///      explicit gas limit of at least 400_000 for hooked jobs.
     function complete(uint256 jobId, bytes32 reason, bytes calldata optParams) external nonReentrant {
         Job storage job = _requireJob(jobId);
         _requireStatus(job, JobStatus.Submitted);
@@ -262,21 +270,25 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         uint256 evaluatorFee = (budget * evaluatorFeeBps) / BPS_DENOM;
         uint256 providerPay  = budget - platformFee - evaluatorFee;
 
-        if (platformFee  > 0) paymentToken.safeTransfer(treasury,       platformFee);
+        // K-3: credit instead of push-transfer
+        if (platformFee  > 0) {
+            _owed[treasury]       += platformFee;
+        }
         if (evaluatorFee > 0) {
-            paymentToken.safeTransfer(job.evaluator, evaluatorFee);
-            emit EvaluatorFeePaid(jobId, job.evaluator, evaluatorFee);
+            _owed[job.evaluator]  += evaluatorFee;
+            emit EvaluatorFeeCredited(jobId, job.evaluator, evaluatorFee);
+            emit EvaluatorFeePaid(jobId, job.evaluator, evaluatorFee); // legacy
         }
         if (providerPay  > 0) {
-            paymentToken.safeTransfer(job.provider, providerPay);
-            emit PaymentReleased(jobId, job.provider, providerPay);
+            _owed[job.provider]   += providerPay;
+            emit PaymentCredited(jobId, job.provider, providerPay);
+            emit PaymentReleased(jobId, job.provider, providerPay); // legacy
         }
 
         emit JobCompleted(jobId, msg.sender, reason);
         _hookAfter(job.hook, jobId, msg.sig, optParams);
     }
 
-    /// @notice Reject a job. Evaluator may reject Funded or Submitted; client may reject Open.
     function reject(uint256 jobId, bytes32 reason, bytes calldata optParams) external nonReentrant {
         Job storage job = _requireJob(jobId);
 
@@ -294,8 +306,10 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         job.status = JobStatus.Rejected;
 
         if (prev == JobStatus.Funded || prev == JobStatus.Submitted) {
-            paymentToken.safeTransfer(job.client, job.budget);
-            emit Refunded(jobId, job.client, job.budget);
+            // K-3: credit instead of push-transfer
+            _owed[job.client] += job.budget;
+            emit RefundCredited(jobId, job.client, job.budget);
+            emit Refunded(jobId, job.client, job.budget); // legacy
         }
 
         emit JobRejected(jobId, msg.sender, reason);
@@ -312,8 +326,10 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         if (block.timestamp < job.expiredAt) revert NotExpiredYet();
 
         job.status = JobStatus.Expired;
-        paymentToken.safeTransfer(job.client, job.budget);
-        emit Refunded(jobId, job.client, job.budget);
+        // K-3: credit instead of push-transfer
+        _owed[job.client] += job.budget;
+        emit RefundCredited(jobId, job.client, job.budget);
+        emit Refunded(jobId, job.client, job.budget); // legacy
         emit JobExpired(jobId);
         // NOTE: no hook calls here — intentional per ERC-8183 spec
     }
@@ -326,8 +342,6 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
 
     // ── Internals ────────────────────────────────────────────────────────────
 
-    /// @notice External helper so submit() can try/catch URI decode without assembly.
-    ///         Must be external for try/catch to work.
     function _decodeSubmitURI(bytes calldata optParams) external pure returns (string memory uri) {
         (, , uri) = abi.decode(optParams, (address, uint256, string));
     }
@@ -341,14 +355,12 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         if (job.status != expected) revert WrongStatus(expected, job.status);
     }
 
-    /// @dev Hook before — passes optParams (Step 3: consistent with afterAction)
     function _hookBefore(address hook, uint256 jobId, bytes4 selector, bytes calldata optParams) internal {
         if (hook != address(0)) {
             IACPHook(hook).beforeAction(jobId, selector, optParams);
         }
     }
 
-    /// @dev Hook after — passes optParams (Step 3: consistent with beforeAction)
     function _hookAfter(address hook, uint256 jobId, bytes4 selector, bytes calldata optParams) internal {
         if (hook != address(0)) {
             IACPHook(hook).afterAction(jobId, selector, optParams);

@@ -39,11 +39,25 @@ interface IAgenticCommerce {
 
     function setProvider(uint256 jobId, address provider, bytes calldata optParams) external;
     function setBudget(uint256 jobId, uint256 amount, bytes calldata optParams) external;
+
+    /// @notice Fund escrow. msg.sender must be the job client.
     function fund(uint256 jobId, bytes calldata optParams) external;
+
+    /// @notice Fund escrow on behalf of a client (K-1 fix).
+    ///         Only callable by a whitelisted trusted funder (e.g. CCTPJobFunder).
+    ///         client is the address credited as the payer; optParams is forwarded to ACP.
+    function fundOnBehalfOf(uint256 jobId, address client, bytes calldata optParams) external;
+
     function submit(uint256 jobId, bytes32 deliverable, bytes calldata optParams) external;
     function complete(uint256 jobId, bytes32 reason, bytes calldata optParams) external;
     function reject(uint256 jobId, bytes32 reason, bytes calldata optParams) external;
     function claimRefund(uint256 jobId) external;
+
+    /// @notice K-3 fix: pull funds owed to msg.sender (platform fee, evaluator fee, provider pay, refund).
+    function withdraw() external;
+
+    /// @notice View pending balance owed to an address.
+    function owed(address recipient) external view returns (uint256);
 }
 
 // CCTP v2 MessageTransmitter interface (IMessageHandlerV2)

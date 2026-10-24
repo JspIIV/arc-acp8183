@@ -70,7 +70,10 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     event ProviderSet(uint256 indexed jobId, address indexed provider);
     event BudgetSet(uint256 indexed jobId, uint256 amount);
     event JobFunded(uint256 indexed jobId, address indexed client, uint256 amount);
-    event JobSubmitted(uint256 indexed jobId, address indexed provider, bytes32 deliverable);
+    /// @notice uri is the content-addressed location of the deliverable (e.g. ipfs://CID or https://...).
+    ///         Empty string when the provider did not encode a URI in optParams.
+    ///         Integrity: keccak256(content) MUST equal deliverable.
+    event JobSubmitted(uint256 indexed jobId, address indexed provider, bytes32 deliverable, string uri);
     event JobCompleted(uint256 indexed jobId, address indexed evaluator, bytes32 reason);
     event JobRejected(uint256 indexed jobId, address indexed rejector, bytes32 reason);
     event JobExpired(uint256 indexed jobId);
@@ -210,13 +213,32 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Provider submits deliverable. deliverable is bytes32 per ERC-8183 spec.
+    /// @dev    optParams (optional): abi.encode(string uri) — content-addressed location
+    ///         of the deliverable. The evaluator fetches the content from uri and MUST
+    ///         verify keccak256(content) == deliverable before calling complete().
+    ///         Supported schemes: ipfs://<CID>, https://<url>, ar://<txid>.
+    ///         If optParams is empty the uri is recorded as "" and integrity is verified
+    ///         through an out-of-band channel agreed between provider and evaluator.
     function submit(uint256 jobId, bytes32 deliverable, bytes calldata optParams) external nonReentrant {
         Job storage job = _requireJob(jobId);
         _requireStatus(job, JobStatus.Funded);
         if (msg.sender != job.provider) revert NotProvider();
         _hookBefore(job.hook, jobId, msg.sig, optParams);
         job.status = JobStatus.Submitted;
-        emit JobSubmitted(jobId, msg.sender, deliverable);
+        // Decode delivery URI from optParams when provided.
+        // optParams format (all fields optional, encode only what you need):
+        //   - URI only:              abi.encode("", "", "ipfs://CID")  [address(0), 0, uri]
+        //   - Sub-agent only:        abi.encode(subAgent, cost, "")
+        //   - Both:                  abi.encode(subAgent, cost, uri)
+        // BondHook's _beforeSubmit reads the same optParams for sub-agent data.
+        string memory uri = "";
+        if (optParams.length > 0) {
+            // Try to decode as (address, uint256, string); fall back to empty uri on failure.
+            try this._decodeSubmitURI(optParams) returns (string memory u) {
+                uri = u;
+            } catch {}
+        }
+        emit JobSubmitted(jobId, msg.sender, deliverable, uri);
         _hookAfter(job.hook, jobId, msg.sig, optParams);
     }
 
@@ -303,6 +325,12 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     }
 
     // ── Internals ────────────────────────────────────────────────────────────
+
+    /// @notice External helper so submit() can try/catch URI decode without assembly.
+    ///         Must be external for try/catch to work.
+    function _decodeSubmitURI(bytes calldata optParams) external pure returns (string memory uri) {
+        (, , uri) = abi.decode(optParams, (address, uint256, string));
+    }
 
     function _requireJob(uint256 jobId) internal view returns (Job storage job) {
         job = _jobs[jobId];

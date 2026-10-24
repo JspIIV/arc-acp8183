@@ -22,19 +22,21 @@ export default function ProviderView({ job }: { job: Job }) {
   const subCost    = parseUsdc(subCostStr);
   const isProvider = address?.toLowerCase() === job.provider.toLowerCase();
 
-  // Bond state
-  const { data: freeBond,   refetch: rfFree }  = useReadContract({
-    address: BOND_HOOK_ADDRESS, abi: BOND_HOOK_ABI, functionName: "freeBond",
+  // Bond state: total staked
+  const { data: totalBond, refetch: rfFree } = useReadContract({
+    address: BOND_HOOK_ADDRESS, abi: BOND_HOOK_ABI, functionName: "bondBalance",
     args: [address ?? "0x0000000000000000000000000000000000000000"],
     chainId: TARGET_CHAIN.id,
     query: { enabled: !!BOND_HOOK_ADDRESS && !!address },
   });
+  // Locked bond against this job
   const { data: lockedBond } = useReadContract({
     address: BOND_HOOK_ADDRESS, abi: BOND_HOOK_ABI, functionName: "lockedBond",
-    args: [address ?? "0x0000000000000000000000000000000000000000"],
+    args: [job.id],
     chainId: TARGET_CHAIN.id,
-    query: { enabled: !!BOND_HOOK_ADDRESS && !!address },
+    query: { enabled: !!BOND_HOOK_ADDRESS },
   });
+  const freeBond = (totalBond ?? 0n) - (lockedBond ?? 0n);
 
   // Bond requirement: 50% of job budget
   const bondRequired = job.budget / 2n;

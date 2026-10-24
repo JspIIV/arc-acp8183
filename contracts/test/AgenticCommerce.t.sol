@@ -420,7 +420,7 @@ contract BondHookTest is ACPBase {
         uint256 jobId = _createHookedFundedJob();
 
         // Step 3: sub-agent optParams passed directly to submit
-        bytes memory optParams = abi.encode(subAgent, subCost);
+        bytes memory optParams = abi.encode(subAgent, subCost, "");
         vm.prank(provider);
         acp.submit(jobId, bytes32("deliverable"), optParams);
 
@@ -434,7 +434,7 @@ contract BondHookTest is ACPBase {
     // ── Sub-agent: subAgent == provider reverts ──────────────────────────────
     function test_SubAgent_SameAsProvider_Reverts() public {
         uint256 jobId = _createHookedFundedJob();
-        bytes memory optParams = abi.encode(provider, 10e6);
+        bytes memory optParams = abi.encode(provider, 10e6, "");
         vm.prank(provider);
         vm.expectRevert(BondHook.SubAgentIsProvider.selector);
         acp.submit(jobId, bytes32("deliverable"), optParams);
@@ -444,7 +444,7 @@ contract BondHookTest is ACPBase {
     function test_SubAgent_MissingAllowance_CompletionSucceeds() public {
         address subAgent = makeAddr("subAgent");
         uint256 jobId = _createHookedFundedJob();
-        bytes memory optParams = abi.encode(subAgent, 10e6);
+        bytes memory optParams = abi.encode(subAgent, 10e6, "");
         vm.prank(provider);
         acp.submit(jobId, bytes32("deliverable"), optParams);
 
@@ -481,7 +481,7 @@ contract BondHookTest is ACPBase {
     function test_Submit_WithSubAgent_Step3() public {
         address subAgent = makeAddr("subAgent");
         uint256 jobId = _createHookedFundedJob();
-        bytes memory optParams = abi.encode(subAgent, 5e6);
+        bytes memory optParams = abi.encode(subAgent, 5e6, "");
         vm.prank(provider);
         acp.submit(jobId, bytes32("work"), optParams);
         (address sa,) = hook.subAgentOrders(jobId);

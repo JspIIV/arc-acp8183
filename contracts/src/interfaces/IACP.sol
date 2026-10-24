@@ -58,6 +58,14 @@ interface IAgenticCommerce {
 
     /// @notice View pending balance owed to an address.
     function owed(address recipient) external view returns (uint256);
+
+    /// @notice M-3: view fee split for a given budget.
+    ///         Returns (platformFee, evaluatorFee, providerPay).
+    function feeSplit(uint256 budget) external view returns (
+        uint256 platformFee,
+        uint256 evaluatorFee,
+        uint256 providerPay
+    );
 }
 
 // CCTP v2 MessageTransmitter interface (IMessageHandlerV2)

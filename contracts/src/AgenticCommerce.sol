@@ -57,6 +57,7 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     error ZeroAddress();
     error FeesTooHigh();
     error NothingToWithdraw();
+    error EmergencySettleOnlyOwner();
 
     // ── Events ───────────────────────────────────────────────────────────────
     event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider, address evaluator, uint256 expiredAt, address hook);
@@ -84,6 +85,8 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     event PlatformFeeSet(uint256 bps);
     event EvaluatorFeeSet(uint256 bps);
     event Withdrawn(address indexed recipient, uint256 amount);
+    // H-1: hook failure observability
+    event HookFailed(uint256 indexed jobId, address indexed hook, bytes4 selector, bytes reason);
 
     // ── Constructor ──────────────────────────────────────────────────────────
     constructor(address paymentToken_, address treasury_) Ownable(msg.sender) {
@@ -355,15 +358,34 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         if (job.status != expected) revert WrongStatus(expected, job.status);
     }
 
+    /// @notice H-1: hook calls are wrapped in try/catch.
+    ///         A reverting hook emits HookFailed but never blocks the lifecycle.
+    ///         The lifecycle state has already been committed before _hookAfter is called,
+    ///         so a hook failure in afterAction cannot corrupt the job state.
     function _hookBefore(address hook, uint256 jobId, bytes4 selector, bytes calldata optParams) internal {
-        if (hook != address(0)) {
-            IACPHook(hook).beforeAction(jobId, selector, optParams);
+        if (hook == address(0)) return;
+        try IACPHook(hook).beforeAction(jobId, selector, optParams) {
+            // success
+        } catch (bytes memory reason) {
+            emit HookFailed(jobId, hook, selector, reason);
+            // before-hooks that revert should only skip non-critical logic.
+            // For submit/complete/reject the before-hook may perform bond locking
+            // (BondHook._beforeSubmit). In that case the revert IS intentional
+            // (e.g. InsufficientFreeBond) and we must bubble it up so the
+            // lifecycle function also reverts. We therefore re-revert:
+            assembly { revert(add(reason, 32), mload(reason)) }
         }
     }
 
     function _hookAfter(address hook, uint256 jobId, bytes4 selector, bytes calldata optParams) internal {
-        if (hook != address(0)) {
-            IACPHook(hook).afterAction(jobId, selector, optParams);
+        if (hook == address(0)) return;
+        try IACPHook(hook).afterAction(jobId, selector, optParams) {
+            // success
+        } catch (bytes memory reason) {
+            // H-1: after-hooks that revert must NOT block settlement.
+            // State is already committed (status = Completed/Rejected/etc.)
+            // so we swallow the revert and emit an observable event.
+            emit HookFailed(jobId, hook, selector, reason);
         }
     }
 }

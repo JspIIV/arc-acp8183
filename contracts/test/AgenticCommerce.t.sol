@@ -360,6 +360,59 @@ contract AgenticCommerceTest is ACPBase {
         vm.expectRevert(AgenticCommerce.FeesTooHigh.selector);
         acp.setPlatformFee(2_100, treasury);
     }
+
+    // ── H-1: reverting afterAction hook must NOT block complete ──────────────
+    // Uses AfterRevertHook which passes beforeAction but reverts afterAction.
+    // Before fix: _hookAfter re-reverted, locking the job forever.
+    // After fix:  HookFailed is emitted and complete() succeeds.
+    function test_H1_RevertingAfterHook_CompleteSucceeds() public {
+        AfterRevertHook arHook = new AfterRevertHook();
+        vm.prank(owner); acp.setHookWhitelist(address(arHook), true);
+
+        vm.prank(client);
+        uint256 jobId = acp.createJob(provider, evaluator, block.timestamp + EXPIRY_OFFSET, "h1b", address(arHook));
+        vm.prank(provider); acp.setBudget(jobId, BUDGET, "");
+        vm.prank(client);   acp.fund(jobId, "");
+        vm.prank(provider); acp.submit(jobId, bytes32("d"), "");
+
+        // complete() must succeed despite afterAction reverting
+        vm.prank(evaluator);
+        acp.complete(jobId, bytes32("ok"), "");
+
+        // Job IS completed
+        IAgenticCommerce.Job memory j = acp.getJob(jobId);
+        assertEq(uint8(j.status), uint8(IAgenticCommerce.JobStatus.Completed), "job completed");
+
+        // Provider can still withdraw
+        assertGt(acp.owed(provider), 0, "provider has owed balance");
+    }
+
+    // ── H-1: reverting afterAction hook must NOT block reject ────────────────
+    function test_H1_RevertingAfterHook_RejectSucceeds() public {
+        AfterRevertHook arHook = new AfterRevertHook();
+        vm.prank(owner); acp.setHookWhitelist(address(arHook), true);
+
+        vm.prank(client);
+        uint256 jobId = acp.createJob(provider, evaluator, block.timestamp + EXPIRY_OFFSET, "h1r", address(arHook));
+        vm.prank(provider); acp.setBudget(jobId, BUDGET, "");
+        vm.prank(client);   acp.fund(jobId, "");
+        vm.prank(provider); acp.submit(jobId, bytes32("d"), "");
+
+        vm.prank(evaluator);
+        acp.reject(jobId, bytes32("bad"), "");  // must NOT revert
+
+        IAgenticCommerce.Job memory j = acp.getJob(jobId);
+        assertEq(uint8(j.status), uint8(IAgenticCommerce.JobStatus.Rejected), "job rejected");
+        assertEq(acp.owed(client), BUDGET, "client refunded");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hook that passes beforeAction but reverts in afterAction (H-1 test helper)
+// ---------------------------------------------------------------------------
+contract AfterRevertHook is IACPHook {
+    function beforeAction(uint256, bytes4, bytes calldata) external pure override { /* no-op */ }
+    function afterAction(uint256, bytes4, bytes calldata)  external pure override { revert("after revert"); }
 }
 
 // ===========================================================================
@@ -820,5 +873,21 @@ contract CCTPJobFunderTest is ACPBase {
         vm.prank(treasury);  acp.withdraw();
 
         assertEq(usdc.balanceOf(address(acp)), 0, "ACP holds zero USDC");
+    }
+
+    // ── M-1: truncated message body reverts ──────────────────────────────────
+    function test_CCTP_TruncatedMessage_Reverts() public {
+        bytes memory shortBody = new bytes(100); // < 165
+        vm.prank(address(transmitter));
+        vm.expectRevert(CCTPJobFunder.InvalidMessageBody.selector);
+        funder.handleReceiveFinalizedMessage(SOURCE_DOMAIN, TRUSTED_SENDER, 1000, shortBody);
+    }
+
+    // ── M-1: truncated unfinalized message reverts ───────────────────────────
+    function test_CCTP_TruncatedUnfinalizedMessage_Reverts() public {
+        bytes memory shortBody = new bytes(100); // < 165
+        vm.prank(address(transmitter));
+        vm.expectRevert(CCTPJobFunder.InvalidMessageBody.selector);
+        funder.handleReceiveUnfinalizedMessage(SOURCE_DOMAIN, TRUSTED_SENDER, 1000, shortBody);
     }
 }

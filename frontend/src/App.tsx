@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { ConnectKitButton } from "connectkit";
+import { PasskeyWalletPanel } from "./components/PasskeyWalletPanel";
 import {
   ArcWorldProvider, useArcWorld, lockedEscrow, agreementsOf, type AcpJob,
 } from "./context/ArcWorldContext";
@@ -424,7 +425,12 @@ function LeftPanel({ onSelectJob }: { onSelectJob: (j: AcpJob) => void }) {
 
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", background:"rgba(5,12,23,0.97)", borderRight:"1px solid #0f2035" }}>
-      <div style={{ padding:"12px 14px 10px", borderBottom:"1px solid #0f2035" }}>
+      {/* Passkey Wallet — Circle Modular Wallets MSCA */}
+      <div style={{ padding:"10px 10px 0", flexShrink:0 }}>
+        <PasskeyWalletPanel />
+      </div>
+
+      <div style={{ padding:"8px 14px 8px", borderBottom:"1px solid #0f2035" }}>
         <div style={{ fontSize:9, letterSpacing:2, color:"#4b6a8a", fontWeight:700, marginBottom:6 }}>SOVEREIGNS</div>
         <div style={{ display:"flex", gap:4 }}>
           {(["nodes","jobs"] as const).map(t => (

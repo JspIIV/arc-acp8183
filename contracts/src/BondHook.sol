@@ -204,7 +204,9 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
         if (free < required) revert InsufficientFreeBond(required, free);
 
         if (optParams.length > 0) {
-            (address subAgent, uint256 cost) = abi.decode(optParams, (address, uint256));
+            // optParams format: (address subAgent, uint256 cost, string uri)
+            // uri is ignored here — AgenticCommerce.submit reads it for the event.
+            (address subAgent, uint256 cost,) = abi.decode(optParams, (address, uint256, string));
             if (subAgent == job.provider) revert SubAgentIsProvider();
             if (cost >= job.budget) revert SubAgentCostExceedsProviderShare();
             subAgentOrders[jobId] = SubAgentOrder({ subAgent: subAgent, cost: cost });

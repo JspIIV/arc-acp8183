@@ -6,6 +6,12 @@ import { ACP_ADDRESS, USDC_ADDRESS, TARGET_CHAIN } from "../config";
 import { fmtUsdc } from "../utils";
 import { CheckCircle2, XCircle, Scale } from "lucide-react";
 
+function toBytes32(s: string): `0x${string}` {
+  const hex = Array.from(new TextEncoder().encode(s.slice(0, 31)))
+    .map(b => b.toString(16).padStart(2, "0")).join("");
+  return `0x${hex.padEnd(64, "0")}` as `0x${string}`;
+}
+
 type Job = {
   id: bigint; client: string; provider: string; evaluator: string;
   description: string; budget: bigint; expiredAt: bigint; status: number; hook: string;
@@ -41,9 +47,10 @@ export default function EvaluatorView({ job }: { job: Job }) {
     // ⚠️ Explicit gas limit required: hooked jobs with a registered ERC-8004 agentId
     // cost ~350k gas. Estimation can under-estimate this because the BondHook calls
     // ReputationRegistry externally. See README § Gas requirement.
+    if (!ACP_ADDRESS) return;
     writeContract({
-      address: ACP_ADDRESS, abi: ACP_ABI, functionName: "complete",
-      args: [job.id, reason, "0x"], chainId: TARGET_CHAIN.id,
+      address: ACP_ADDRESS as `0x${string}`, abi: ACP_ABI, functionName: "complete",
+      args: [job.id, toBytes32(reason), "0x"], chainId: TARGET_CHAIN.id,
       gas: 400_000n,
     });
     toast.info("Completing job… (gas: 400k)");
@@ -51,9 +58,10 @@ export default function EvaluatorView({ job }: { job: Job }) {
 
   function handleReject() {
     if (!reason) { toast.error("Provide a rejection reason"); return; }
+    if (!ACP_ADDRESS) return;
     writeContract({
-      address: ACP_ADDRESS, abi: ACP_ABI, functionName: "reject",
-      args: [job.id, reason, "0x"], chainId: TARGET_CHAIN.id,
+      address: ACP_ADDRESS as `0x${string}`, abi: ACP_ABI, functionName: "reject",
+      args: [job.id, toBytes32(reason), "0x"], chainId: TARGET_CHAIN.id,
       gas: 400_000n,
     });
     toast.info("Rejecting job… (gas: 400k)");

@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import "forge-std/Script.sol";
 import "../src/AgenticCommerce.sol";
 import "../src/BondHook.sol";
-import "../src/CCTPJobFunder.sol";
+import "../src/CCTPJobFunderV2.sol";
 import "../src/ACPTimelock.sol";
 
 // ---------------------------------------------------------------------------
@@ -34,8 +34,9 @@ import "../src/ACPTimelock.sol";
 //   ARBITER_DEADLINE         172800 (only used when DISPUTE_WINDOW > 0)
 //   DISPUTE_DEPOSIT          0 (USDC base units, 6 decimals)
 //   ARBITERS                 comma separated arbiter addresses (optional)
-//   DEPLOY_CCTP              false. CCTPJobFunder is NOT safe to deploy until it is
-//                            redesigned. Leave this off.
+//   DEPLOY_CCTP              false. Deploys CCTPJobFunderV2 (the v1 contract never worked
+//                            and is not part of this script). Turn on only after reading
+//                            docs/deploy-checklist.md, section "Cross-chain funding".
 //   CCTP_TOKEN_MESSENGER     required only when DEPLOY_CCTP=true
 //   CCTP_MESSAGE_TRANSMITTER required only when DEPLOY_CCTP=true
 // ---------------------------------------------------------------------------
@@ -120,10 +121,10 @@ contract Deploy is Script {
 
         address cctpFunder = address(0);
         if (cfg.deployCctp) {
-            cctpFunder = address(new CCTPJobFunder(
+            cctpFunder = address(new CCTPJobFunderV2(
                 cfg.usdc, address(acp), cfg.tokenMessenger, cfg.messageTransmitter
             ));
-            console.log("CCTPJobFunder:", cctpFunder);
+            console.log("CCTPJobFunderV2:", cctpFunder);
         }
 
         // The deployer is still the owner here, so all configuration happens BEFORE
@@ -133,6 +134,9 @@ contract Deploy is Script {
 
         acp.transferOwnership(address(timelock));
         bondHook.transferOwnership(address(timelock));
+        // The funder keeps its remotes configurable for the 48h window (setRemote needs the
+        // counterpart addresses from other chains), then the timelock accepts ownership too.
+        if (cctpFunder != address(0)) CCTPJobFunderV2(cctpFunder).transferOwnership(address(timelock));
         console.log("Ownership transfer started (pending acceptOwnership by the timelock)");
 
         _printSummary(address(acp), address(bondHook), cctpFunder, address(timelock), cfg.timelockDelay);
@@ -157,7 +161,7 @@ contract Deploy is Script {
 
         if (cctpFunder != address(0)) {
             acp.setTrustedFunder(cctpFunder, true);
-            console.log("CCTPJobFunder registered as trusted funder");
+            console.log("CCTPJobFunderV2 registered as trusted funder");
         }
 
         if (cfg.validationReg != address(0)) {
@@ -193,7 +197,7 @@ contract Deploy is Script {
         console.log("=== DEPLOYED ===");
         console.log("AgenticCommerce:", acp);
         console.log("BondHook:       ", bondHook);
-        console.log("CCTPJobFunder:  ", cctpFunder);
+        console.log("CCTPJobFunderV2:", cctpFunder);
         console.log("ACPTimelock:    ", timelock);
         console.log("Timelock delay (s):", delay);
         console.log("=== NEXT STEPS ===");

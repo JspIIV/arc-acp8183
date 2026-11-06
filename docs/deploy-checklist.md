@@ -14,16 +14,44 @@ independent professional audit before putting real funds in.
 | Evaluator | client's free choice | optional ERC-8004 ValidationRegistry gate |
 | Rejection | final immediately | optional dispute window with an arbiter |
 | After-hook failure | could block settlement | settlement always completes |
-| CCTP funding | present | NOT included (see below) |
+| CCTP funding | v1, does not work | CCTPJobFunderV2, optional (section 1) |
 
 v2 is a new deployment. v1 jobs and balances do not move. Keep v1 running until its
 open jobs are settled.
 
-## 1. Do not deploy CCTPJobFunder
+## 1. Cross-chain funding (optional, off by default)
 
-The CCTP funder reads the wrong message layout and relies on a callback that CCTP V2
-does not make. Leave `DEPLOY_CCTP` unset. Cross-chain funding comes back after the
-funder is redesigned and tested against the real CCTP contracts.
+The v1 CCTPJobFunder on mainnet does not work: it assumed CCTP calls back into the
+recipient after minting (it does not) and read the hook data from the wrong offset.
+Do not send CCTP transfers to it.
+
+`CCTPJobFunderV2` is the replacement. Leave `DEPLOY_CCTP` unset for a first deploy and
+add it later once the rest is verified. If you do turn it on:
+
+1. Get TokenMessengerV2 and MessageTransmitterV2 for each chain from Circle's
+   published contract address page. Never copy them from memory or from chat.
+2. Deploy one funder per chain: on Arc with the ACP address, and on each source chain
+   with `acp = address(0)` (source only).
+3. On every deployment call `setRemote(domain, remoteTokenMessenger, remoteFunder)` for
+   each counterpart. Arc's CCTP domain is 26. Both sides must register each other.
+4. Arc side: the funder must be an ACP trusted funder (the script does this).
+5. Start with small amounts. The contract has no upgrade path: if a bug is found, burns
+   that are already in flight can only be redeemed by this contract.
+6. Rehearse on testnet with the real CCTP contracts before mainnet. The unit tests use
+   mocks that follow Circle's documented message layout; they do not replace this.
+
+Operational notes:
+- To stop new transfers toward a domain use `setSendDisabled(domain, true)`. Do NOT clear
+  a remote while burns are in flight: messages from a cleared remote can no longer be
+  redeemed.
+- A relayer (anyone) calls `redeemAndFund(message, attestation)` on Arc. If funding cannot
+  complete (wrong budget, job not ready), the minted USDC is credited to the client's
+  recovery balance. The client can then call `fundFromRecovery(jobId, expectedBudget)` or
+  `recoverFunds()`.
+- `destinationClient` on the source call must be an address you control on Arc. Recovery
+  goes to it.
+- Ownership is handed to the timelock like the other contracts. `renounceOwnership` is
+  disabled on purpose.
 
 ## 2. Verify addresses yourself
 
@@ -159,4 +187,4 @@ validation gate. Add them before exposing those flows in the UI.
 - Not professionally audited.
 - Dispute arbiter selection is block-data based. Treat it as a trusted-arbiter model.
 - The timelock proposer and executor are only as safe as the keys behind them.
-- CCTP funding is not part of v2 until it is redesigned.
+- CCTP funding (V2) has only been tested against mocks of Circle's documented message layout, not the live CCTP contracts.

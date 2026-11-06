@@ -7,7 +7,8 @@
     "dev": "vite --port 5173 --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "sync-abis": "bun scripts/sync-abis.ts"
   },
   "dependencies": {
     "@circle-fin/modular-wallets-core": "^1.0.16",

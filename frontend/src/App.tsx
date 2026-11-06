@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { ConnectKitButton } from "connectkit";
 import { PasskeyWalletPanel } from "./components/PasskeyWalletPanel";
+import { PayoutsPanel } from "./components/PayoutsPanel";
 import {
   ArcWorldProvider, useArcWorld, lockedEscrow, agreementsOf, type AcpJob,
 } from "./context/ArcWorldContext";
@@ -429,6 +430,7 @@ function LeftPanel({ onSelectJob }: { onSelectJob: (j: AcpJob) => void }) {
       <div style={{ padding:"10px 10px 0", flexShrink:0 }}>
         <PasskeyWalletPanel />
       </div>
+      <PayoutsPanel />
 
       <div style={{ padding:"8px 14px 8px", borderBottom:"1px solid #0f2035" }}>
         <div style={{ fontSize:9, letterSpacing:2, color:"#4b6a8a", fontWeight:700, marginBottom:6 }}>SOVEREIGNS</div>

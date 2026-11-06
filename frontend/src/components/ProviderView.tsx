@@ -29,12 +29,12 @@ export default function ProviderView({ job }: { job: Job }) {
     chainId: TARGET_CHAIN.id,
     query: { enabled: !!BOND_HOOK_ADDRESS && !!address },
   });
-  // Locked bond against this job
+  // Bond locked across this provider's live jobs
   const { data: lockedBond } = useReadContract({
-    address: BOND_HOOK_ADDRESS, abi: BOND_HOOK_ABI, functionName: "lockedBond",
-    args: [job.id],
+    address: BOND_HOOK_ADDRESS, abi: BOND_HOOK_ABI, functionName: "bondLocked",
+    args: [address ?? "0x0000000000000000000000000000000000000000"],
     chainId: TARGET_CHAIN.id,
-    query: { enabled: !!BOND_HOOK_ADDRESS },
+    query: { enabled: !!BOND_HOOK_ADDRESS && !!address },
   });
   const freeBond = (totalBond ?? 0n) - (lockedBond ?? 0n);
 

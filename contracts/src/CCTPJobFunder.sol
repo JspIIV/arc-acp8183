@@ -61,6 +61,7 @@ contract CCTPJobFunder is IMessageHandlerV2, ReentrancyGuard, Ownable2Step {
     error AmountMismatch(uint256 decoded, uint256 actual);
     error ZeroAddress();
     error ZeroAmount();
+    error DirectAmountNotBudget();
 
     // ── Events ──────────────────────────────────────────────────────────────
     event JobFundingInitiated(uint256 indexed jobId, address indexed client, uint256 amount, uint32 destinationDomain);
@@ -232,6 +233,9 @@ contract CCTPJobFunder is IMessageHandlerV2, ReentrancyGuard, Ownable2Step {
         uint256 amount
     ) external nonReentrant {
         if (amount == 0) revert ZeroAmount();
+        // Pull exactly the job budget: ACP only consumes job.budget, so any surplus
+        // would be stranded here with no recovery path.
+        if (amount != acp.getJob(jobId).budget) revert DirectAmountNotBudget();
         usdc.safeTransferFrom(msg.sender, address(this), amount);
         usdc.safeIncreaseAllowance(address(acp), amount);
         try acp.fundOnBehalfOf(jobId, msg.sender, abi.encode(expectedBudget)) {

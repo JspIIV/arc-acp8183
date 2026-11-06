@@ -165,10 +165,14 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
         if (locked == 0) revert NoBondLocked();
 
         IAgenticCommerce.Job memory job = acp.getJob(jobId);
-        // Only release for terminal non-completion states
+        // Only release for terminal states. Completed is included as a recovery path:
+        // ACP deliberately lets complete() succeed even if this hook's afterAction
+        // reverted, which would otherwise leave the lock in place forever. For a normally
+        // completed job the lock is already cleared, so this reverts with NoBondLocked.
         if (
             job.status != IAgenticCommerce.JobStatus.Expired &&
-            job.status != IAgenticCommerce.JobStatus.Rejected
+            job.status != IAgenticCommerce.JobStatus.Rejected &&
+            job.status != IAgenticCommerce.JobStatus.Completed
         ) revert JobNotSettled();
 
         address provider = job.provider;

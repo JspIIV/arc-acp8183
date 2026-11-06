@@ -805,6 +805,36 @@ contract CCTPJobFunderTest is ACPBase {
         return bytes.concat(body, abi.encode(hookData));
     }
 
+    // ── fundJobDirect: pulls exactly the budget, no stranded surplus ─────────
+
+    function _openJobWithBudget() internal returns (uint256 jobId) {
+        vm.prank(client);
+        jobId = acp.createJob(provider, evaluator, block.timestamp + EXPIRY_OFFSET, "direct", address(0));
+        vm.prank(provider);
+        acp.setBudget(jobId, BUDGET, "");
+        vm.prank(client);
+        usdc.approve(address(funder), type(uint256).max);
+    }
+
+    function test_FundJobDirect_ExactBudget_Funds() public {
+        uint256 jobId = _openJobWithBudget();
+        uint256 clientBefore = usdc.balanceOf(client);
+        vm.prank(client);
+        funder.fundJobDirect(jobId, BUDGET, BUDGET);
+        assertEq(uint8(acp.getJob(jobId).status), uint8(IAgenticCommerce.JobStatus.Funded));
+        assertEq(clientBefore - usdc.balanceOf(client), BUDGET);
+        assertEq(funder.pendingRecovery(client), 0);
+    }
+
+    function test_FundJobDirect_Surplus_Reverts() public {
+        uint256 jobId = _openJobWithBudget();
+        uint256 clientBefore = usdc.balanceOf(client);
+        vm.prank(client);
+        vm.expectRevert(CCTPJobFunder.DirectAmountNotBudget.selector);
+        funder.fundJobDirect(jobId, BUDGET, BUDGET + 1e6);
+        assertEq(usdc.balanceOf(client), clientBefore, "nothing pulled");
+    }
+
     // ── CCTP K-1: funding via fundOnBehalfOf credits the right job ───────────
     function test_CCTP_FundsCorrectJob() public {
         // K-1: job client is `client`, NOT funder — fundOnBehalfOf handles this

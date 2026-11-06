@@ -74,6 +74,34 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     // When false, validation is opt-in per job (evaluatorAgentId > 0 signals opt-in).
     bool   public requireValidatedEvaluatorGlobal;
 
+    // ── Dispute window (optional) ────────────────────────────────────────────
+    // When disputeWindow > 0 and an eligible arbiter exists, an evaluator's
+    // rejection of a Submitted job is only PROPOSED. Funds stay escrowed while
+    // the provider may challenge. job.status stays Submitted until settled, so
+    // claimRefund after expiry always remains available as the escape hatch.
+    enum DisputeState { None, Proposed, Challenged, Resolved }
+
+    struct Dispute {
+        DisputeState state;
+        uint64  challengeEndsAt;   // provider may challenge until this time
+        uint64  rulingDeadline;    // arbiter must rule by this time (set on challenge)
+        address arbiter;
+        bytes32 reason;
+        uint256 deposit;
+    }
+
+    uint64  public constant MAX_DISPUTE_WINDOW   = 7 days;
+    uint64  public constant MAX_ARBITER_DEADLINE = 14 days;
+    uint256 public constant MAX_ARBITERS         = 50;
+
+    uint64  public disputeWindow;        // 0 = disputes disabled
+    uint64  public arbiterDeadline;      // time the arbiter has to rule after a challenge
+    uint256 public disputeDeposit;       // paymentToken amount the provider posts to challenge
+
+    address[] private _arbiters;
+    mapping(address => bool) public isArbiter;
+    mapping(uint256 => Dispute) private _disputes;
+
     // ── Errors ───────────────────────────────────────────────────────────────
     error WrongStatus(JobStatus expected, JobStatus actual);
     error NotClient();
@@ -94,6 +122,19 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     error EmergencySettleOnlyOwner();
     error EvaluatorNotValidated(address evaluator, uint256 agentId);
     error EvaluatorAgentIdNotOwned(address evaluator, uint256 agentId);
+    error DisputePending(uint256 jobId);
+    error DisputeActive(uint256 jobId);
+    error NotArbiter();
+    error NoRejectionProposed();
+    error ChallengeWindowClosed();
+    error ChallengeWindowOpen();
+    error ArbiterDeadlinePassed();
+    error ArbiterDeadlineNotPassed();
+    error InvalidDisputeConfig();
+    error ArbiterAlreadyRegistered();
+    error ArbiterNotRegistered();
+    error TooManyArbiters();
+    error NoEligibleArbiter();
 
     // ── Events ───────────────────────────────────────────────────────────────
     event JobCreated(uint256 indexed jobId, address indexed client, address indexed provider, address evaluator, uint256 expiredAt, address hook);
@@ -126,6 +167,13 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     // ERC-8004: validation gate
     event ValidationRegistrySet(address indexed registry, address indexed identityRegistry);
     event ValidationRequirementSet(uint8 minScore, uint64 minCount, bool globalRequire);
+    // Dispute window
+    event DisputeConfigSet(uint64 window, uint64 arbiterDeadline, uint256 deposit);
+    event ArbiterSet(address indexed arbiter, bool registered);
+    event RejectionProposed(uint256 indexed jobId, address indexed evaluator, bytes32 reason, uint256 challengeEndsAt);
+    event RejectionChallenged(uint256 indexed jobId, address indexed provider, address indexed arbiter, uint256 deposit);
+    event DisputeResolved(uint256 indexed jobId, address indexed arbiter, bool rejectionUpheld, bytes32 reason);
+    event DisputeTimedOut(uint256 indexed jobId, address indexed arbiter);
 
     // ── Constructor ──────────────────────────────────────────────────────────
     constructor(address paymentToken_, address treasury_) Ownable(msg.sender) {
@@ -221,6 +269,160 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         } catch {
             return false;
         }
+    }
+
+    // ── Dispute window: admin ────────────────────────────────────────────────
+
+    /// @notice Configure the dispute window. window == 0 disables disputes entirely
+    ///         (rejections settle immediately, as before).
+    function setDisputeConfig(uint64 window_, uint64 arbiterDeadline_, uint256 deposit_) external onlyOwner {
+        if (window_ > MAX_DISPUTE_WINDOW || arbiterDeadline_ > MAX_ARBITER_DEADLINE) revert InvalidDisputeConfig();
+        if (window_ > 0 && arbiterDeadline_ == 0) revert InvalidDisputeConfig();
+        disputeWindow   = window_;
+        arbiterDeadline = arbiterDeadline_;
+        disputeDeposit  = deposit_;
+        emit DisputeConfigSet(window_, arbiterDeadline_, deposit_);
+    }
+
+    function addArbiter(address arbiter) external onlyOwner {
+        if (arbiter == address(0)) revert ZeroAddress();
+        if (isArbiter[arbiter]) revert ArbiterAlreadyRegistered();
+        if (_arbiters.length >= MAX_ARBITERS) revert TooManyArbiters();
+        isArbiter[arbiter] = true;
+        _arbiters.push(arbiter);
+        emit ArbiterSet(arbiter, true);
+    }
+
+    /// @notice Removing an arbiter does not affect disputes already assigned to them.
+    function removeArbiter(address arbiter) external onlyOwner {
+        if (!isArbiter[arbiter]) revert ArbiterNotRegistered();
+        isArbiter[arbiter] = false;
+        uint256 n = _arbiters.length;
+        for (uint256 i; i < n; ++i) {
+            if (_arbiters[i] == arbiter) {
+                _arbiters[i] = _arbiters[n - 1];
+                _arbiters.pop();
+                break;
+            }
+        }
+        emit ArbiterSet(arbiter, false);
+    }
+
+    function arbiters() external view returns (address[] memory) {
+        return _arbiters;
+    }
+
+    function getDispute(uint256 jobId) external view returns (Dispute memory) {
+        return _disputes[jobId];
+    }
+
+    // ── Dispute window: flow ─────────────────────────────────────────────────
+
+    /// @notice Provider challenges a proposed rejection during the challenge window.
+    ///         Posts disputeDeposit (paymentToken). Funds stay escrowed until the
+    ///         assigned arbiter rules, or until expiry (claimRefund).
+    function challengeRejection(uint256 jobId) external nonReentrant {
+        Job storage job = _requireJob(jobId);
+        _requireStatus(job, JobStatus.Submitted);
+        if (msg.sender != job.provider) revert NotProvider();
+        Dispute storage d = _disputes[jobId];
+        if (d.state != DisputeState.Proposed) revert NoRejectionProposed();
+        if (block.timestamp >= d.challengeEndsAt) revert ChallengeWindowClosed();
+        if (block.timestamp >= job.expiredAt) revert JobExpiredAlready();
+
+        // The arbiter is assigned HERE, not when the evaluator proposes the rejection,
+        // so the evaluator cannot time their rejection to land on a chosen arbiter.
+        address arb = _pickArbiter(jobId, job);
+        if (arb == address(0)) revert NoEligibleArbiter();
+
+        uint256 dep = disputeDeposit;
+        d.state          = DisputeState.Challenged;
+        d.arbiter        = arb;
+        d.rulingDeadline = uint64(block.timestamp) + arbiterDeadline;
+        d.deposit        = dep;
+        if (dep > 0) paymentToken.safeTransferFrom(msg.sender, address(this), dep);
+        emit RejectionChallenged(jobId, msg.sender, arb, dep);
+    }
+
+    /// @notice Anyone may finalize an unchallenged rejection once the window has passed.
+    function finalizeRejection(uint256 jobId) external nonReentrant {
+        Job storage job = _requireJob(jobId);
+        _requireStatus(job, JobStatus.Submitted);
+        Dispute storage d = _disputes[jobId];
+        if (d.state != DisputeState.Proposed) revert NoRejectionProposed();
+        if (block.timestamp < d.challengeEndsAt) revert ChallengeWindowOpen();
+        d.state = DisputeState.Resolved;
+        _settleReject(jobId, job, job.evaluator, d.reason);
+    }
+
+    /// @notice Assigned arbiter rules on a challenged rejection.
+    ///         uphold == true : provider loses; client is refunded; arbiter receives the deposit.
+    ///         uphold == false: rejection overturned; provider is paid as in complete();
+    ///                          arbiter receives the evaluator fee; provider's deposit is returned.
+    function resolveDispute(uint256 jobId, bool uphold, bytes32 reason) external nonReentrant {
+        Job storage job = _requireJob(jobId);
+        _requireStatus(job, JobStatus.Submitted);
+        Dispute storage d = _disputes[jobId];
+        if (d.state != DisputeState.Challenged) revert NoRejectionProposed();
+        if (msg.sender != d.arbiter) revert NotArbiter();
+        if (block.timestamp > d.rulingDeadline) revert ArbiterDeadlinePassed();
+
+        uint256 dep = d.deposit;
+        d.state   = DisputeState.Resolved;
+        d.deposit = 0;
+        emit DisputeResolved(jobId, msg.sender, uphold, reason);
+
+        if (uphold) {
+            if (dep > 0) _owed[msg.sender] += dep;
+            _settleReject(jobId, job, msg.sender, reason);
+        } else {
+            if (dep > 0) _owed[job.provider] += dep;
+            _settleComplete(jobId, job, msg.sender, reason);
+        }
+    }
+
+    /// @notice If the arbiter never rules, anyone may settle after the ruling deadline.
+    ///         The rejection stands, but the provider's deposit is returned (not their fault).
+    function settleArbiterTimeout(uint256 jobId) external nonReentrant {
+        Job storage job = _requireJob(jobId);
+        _requireStatus(job, JobStatus.Submitted);
+        Dispute storage d = _disputes[jobId];
+        if (d.state != DisputeState.Challenged) revert NoRejectionProposed();
+        if (block.timestamp <= d.rulingDeadline) revert ArbiterDeadlineNotPassed();
+
+        uint256 dep = d.deposit;
+        d.state   = DisputeState.Resolved;
+        d.deposit = 0;
+        if (dep > 0) _owed[job.provider] += dep;
+        emit DisputeTimedOut(jobId, d.arbiter);
+        _settleReject(jobId, job, job.evaluator, d.reason);
+    }
+
+    /// @dev True when at least one registered arbiter is not a party to the job.
+    function _hasEligibleArbiter(Job storage job) internal view returns (bool) {
+        uint256 n = _arbiters.length;
+        for (uint256 i; i < n; ++i) {
+            address a = _arbiters[i];
+            if (a != job.client && a != job.provider && a != job.evaluator) return true;
+        }
+        return false;
+    }
+
+    /// @dev Pseudo-random arbiter pick at challenge time, skipping any party to the job.
+    ///      LIMITATION: the seed is block data, so the challenger can influence it by
+    ///      choosing when to challenge. This is NOT verifiable randomness. The registry is
+    ///      owner-vetted (and the owner sits behind a timelock), which bounds the damage;
+    ///      production use should replace this with a VRF or a committee ruling.
+    ///      Returns address(0) when no eligible arbiter exists.
+    function _pickArbiter(uint256 jobId, Job storage job) internal view returns (address) {
+        uint256 n = _arbiters.length;
+        if (n == 0) return address(0);
+        uint256 start = uint256(keccak256(abi.encode(jobId, blockhash(block.number - 1), msg.sender))) % n;
+        for (uint256 i; i < n; ++i) {
+            address a = _arbiters[(start + i) % n];
+            if (a != job.client && a != job.provider && a != job.evaluator) return a;
+        }
+        return address(0);
     }
 
     // ── Fee view ─────────────────────────────────────────────────────────────
@@ -402,7 +604,20 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         _requireStatus(job, JobStatus.Submitted);
         if (msg.sender != job.evaluator) revert NotEvaluator();
 
+        // Dispute window: a challenged rejection is only the arbiter's to settle.
+        // An evaluator who changes their mind before any challenge may still complete.
+        Dispute storage d = _disputes[jobId];
+        if (d.state == DisputeState.Challenged) revert DisputeActive(jobId);
+        if (d.state == DisputeState.Proposed) d.state = DisputeState.Resolved;
+
         _hookBefore(job.hook, jobId, msg.sig, optParams);
+        _creditComplete(jobId, job, job.evaluator);
+        emit JobCompleted(jobId, msg.sender, reason);
+        _hookAfter(job.hook, jobId, msg.sig, optParams);
+    }
+
+    /// @dev Marks the job Completed and credits treasury, fee recipient and provider.
+    function _creditComplete(uint256 jobId, Job storage job, address feeRecipient) internal {
         job.status = JobStatus.Completed;
 
         uint256 budget       = job.budget;
@@ -415,18 +630,36 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
             _owed[treasury]       += platformFee;
         }
         if (evaluatorFee > 0) {
-            _owed[job.evaluator]  += evaluatorFee;
-            emit EvaluatorFeeCredited(jobId, job.evaluator, evaluatorFee);
-            emit EvaluatorFeePaid(jobId, job.evaluator, evaluatorFee); // legacy
+            _owed[feeRecipient]   += evaluatorFee;
+            emit EvaluatorFeeCredited(jobId, feeRecipient, evaluatorFee);
+            emit EvaluatorFeePaid(jobId, feeRecipient, evaluatorFee); // legacy
         }
         if (providerPay  > 0) {
             _owed[job.provider]   += providerPay;
             emit PaymentCredited(jobId, job.provider, providerPay);
             emit PaymentReleased(jobId, job.provider, providerPay); // legacy
         }
+    }
 
-        emit JobCompleted(jobId, msg.sender, reason);
-        _hookAfter(job.hook, jobId, msg.sig, optParams);
+    /// @dev Completion path used when an arbiter overturns a rejection.
+    function _settleComplete(uint256 jobId, Job storage job, address arbiter, bytes32 reason) internal {
+        bytes memory empty;
+        _hookBefore(job.hook, jobId, IAgenticCommerce.complete.selector, empty);
+        _creditComplete(jobId, job, arbiter);
+        emit JobCompleted(jobId, arbiter, reason);
+        _hookAfter(job.hook, jobId, IAgenticCommerce.complete.selector, empty);
+    }
+
+    /// @dev Rejection path used when a proposed rejection becomes final.
+    function _settleReject(uint256 jobId, Job storage job, address rejector, bytes32 reason) internal {
+        bytes memory empty;
+        _hookBefore(job.hook, jobId, IAgenticCommerce.reject.selector, empty);
+        job.status = JobStatus.Rejected;
+        _owed[job.client] += job.budget;
+        emit RefundCredited(jobId, job.client, job.budget);
+        emit Refunded(jobId, job.client, job.budget); // legacy
+        emit JobRejected(jobId, rejector, reason);
+        _hookAfter(job.hook, jobId, IAgenticCommerce.reject.selector, empty);
     }
 
     function reject(uint256 jobId, bytes32 reason, bytes calldata optParams) external nonReentrant {
@@ -438,6 +671,22 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
             if (msg.sender != job.evaluator) revert NotEvaluator();
         } else {
             revert WrongStatus(JobStatus.Open, job.status);
+        }
+
+        // Dispute window: an evaluator's rejection of submitted work is only proposed.
+        // Funds stay escrowed; the provider may challenge before it becomes final.
+        if (job.status == JobStatus.Submitted) {
+            Dispute storage d = _disputes[jobId];
+            // An open proposal or challenge can never be bypassed, even if the owner
+            // disables disputes afterwards. Config changes only affect NEW proposals.
+            if (d.state == DisputeState.Proposed || d.state == DisputeState.Challenged) revert DisputePending(jobId);
+            if (disputeWindow > 0 && _hasEligibleArbiter(job)) {
+                d.state           = DisputeState.Proposed;
+                d.challengeEndsAt = uint64(block.timestamp) + disputeWindow;
+                d.reason          = reason;
+                emit RejectionProposed(jobId, msg.sender, reason, d.challengeEndsAt);
+                return;
+            }
         }
 
         _hookBefore(job.hook, jobId, msg.sig, optParams);
@@ -466,6 +715,17 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         if (block.timestamp < job.expiredAt) revert NotExpiredYet();
 
         job.status = JobStatus.Expired;
+
+        // Dispute window: close any open dispute; a challenger's deposit is returned.
+        Dispute storage d = _disputes[jobId];
+        if (d.state == DisputeState.Challenged && d.deposit > 0) {
+            _owed[job.provider] += d.deposit;
+            d.deposit = 0;
+        }
+        if (d.state == DisputeState.Proposed || d.state == DisputeState.Challenged) {
+            d.state = DisputeState.Resolved;
+        }
+
         // K-3: credit instead of push-transfer
         _owed[job.client] += job.budget;
         emit RefundCredited(jobId, job.client, job.budget);
@@ -499,7 +759,7 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
     ///         A reverting hook emits HookFailed but never blocks the lifecycle.
     ///         The lifecycle state has already been committed before _hookAfter is called,
     ///         so a hook failure in afterAction cannot corrupt the job state.
-    function _hookBefore(address hook, uint256 jobId, bytes4 selector, bytes calldata optParams) internal {
+    function _hookBefore(address hook, uint256 jobId, bytes4 selector, bytes memory optParams) internal {
         if (hook == address(0)) return;
         try IACPHook(hook).beforeAction(jobId, selector, optParams) {
             // success
@@ -514,7 +774,7 @@ contract AgenticCommerce is IAgenticCommerce, ReentrancyGuard, Ownable2Step {
         }
     }
 
-    function _hookAfter(address hook, uint256 jobId, bytes4 selector, bytes calldata optParams) internal {
+    function _hookAfter(address hook, uint256 jobId, bytes4 selector, bytes memory optParams) internal {
         if (hook == address(0)) return;
         try IACPHook(hook).afterAction(jobId, selector, optParams) {
             // success

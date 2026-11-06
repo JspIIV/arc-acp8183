@@ -21,7 +21,7 @@ const STARS = Array.from({ length: 90 }, (_, i) => ({
   x: (i * 137.508) % 100, y: (i * 97.31) % 100, r: 0.5 + (i % 4) * 0.3, o: 0.15 + (i % 6) * 0.08, p: i * 0.7,
 }));
 
-const FALLBACK = { base: "#0d2a4a", ridge: "#1a5080", accent: "#acc6e9" };
+const FALLBACK = { base: "#1061a6", ridge: "#4b9bf0", accent: "#85b1ed" };
 const STATUS_RING: Record<VisualStatus, string | null> = { active: null, contested: "#f59e0b", sanctioned: "#e86d7a" };
 
 interface Hit { id: string; x: number; y: number; s: number }
@@ -107,7 +107,9 @@ type World = ReturnType<typeof useArcWorld>;
 
 function draw(ctx: CanvasRenderingContext2D, W: number, H: number, t: number, w: World, out: Hit[]) {
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = "#050c17";
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, "#0d1b2f"); bg.addColorStop(1, "#16395c");
+  ctx.fillStyle = bg;
   ctx.fillRect(0, 0, W, H);
 
   const s = Math.max(0.55, Math.min(1.25, Math.min(W / 760, H / 520)));
@@ -128,7 +130,7 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, t: number, w:
   ctx.setLineDash([3, 6]);
   ctx.lineWidth = 1;
   for (const p of at.values()) {
-    ctx.strokeStyle = "rgba(172,198,233,0.12)";
+    ctx.strokeStyle = "rgba(133,177,237,0.32)";
     ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(hub[0], hub[1]); ctx.stroke();
   }
   ctx.setLineDash([]);
@@ -161,7 +163,7 @@ function drawBackdrop(ctx: CanvasRenderingContext2D, W: number, H: number, t: nu
   const tw = W / 22, th = tw / 2, cx = W / 2, cy = H * 0.5;
   const iso = (gx: number, gy: number): Pt => [cx + (gx - gy) * tw, cy + (gx + gy) * th];
   ctx.lineWidth = 1;
-  ctx.strokeStyle = "rgba(26,58,90,0.35)";
+  ctx.strokeStyle = "rgba(133,177,237,0.16)";
   ctx.beginPath();
   for (let i = -9; i <= 9; i++) {
     const a = iso(i, -9), b = iso(i, 9), c = iso(-9, i), d = iso(9, i);
@@ -170,8 +172,8 @@ function drawBackdrop(ctx: CanvasRenderingContext2D, W: number, H: number, t: nu
   }
   ctx.stroke();
   const v = ctx.createRadialGradient(cx, cy, Math.min(W, H) * 0.25, cx, cy, Math.max(W, H) * 0.75);
-  v.addColorStop(0, "rgba(5,12,23,0)");
-  v.addColorStop(1, "rgba(5,12,23,0.85)");
+  v.addColorStop(0, "rgba(13,27,47,0)");
+  v.addColorStop(1, "rgba(13,27,47,0.7)");
   ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
 }
 
@@ -180,15 +182,15 @@ function drawArc(ctx: CanvasRenderingContext2D, ag: Agreement, at: Map<string, P
   if (!a || !b) return;
   const color = KIND_COLOR[ag.kind] ?? "#acc6e9";
   const c = arcControl(a, b);
-  const alpha = !focus ? 0.55 : focus === ag.partyA || focus === ag.partyB ? 1 : 0.12;
+  const alpha = !focus ? 0.85 : focus === ag.partyA || focus === ag.partyB ? 1 : 0.12;
 
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.lineWidth = focus && alpha === 1 ? 2.2 : 1.5;
+  ctx.lineWidth = focus && alpha === 1 ? 3 : 2.2;
   ctx.setLineDash(ag.kind === "DATA_SHARING" ? [8, 5] : ag.kind === "NON_AGGRESSION" ? [2, 6] : []);
   ctx.lineDashOffset = -t * 14;
   const g = ctx.createLinearGradient(a[0], a[1], b[0], b[1]);
-  g.addColorStop(0, rgba(color, 0.25)); g.addColorStop(0.5, rgba(color, 1)); g.addColorStop(1, rgba(color, 0.25));
+  g.addColorStop(0, rgba(color, 0.55)); g.addColorStop(0.5, rgba(color, 1)); g.addColorStop(1, rgba(color, 0.55));
   ctx.strokeStyle = g;
   ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.quadraticCurveTo(c[0], c[1], b[0], b[1]); ctx.stroke();
   ctx.setLineDash([]);
@@ -206,31 +208,31 @@ function drawArc(ctx: CanvasRenderingContext2D, ag: Agreement, at: Map<string, P
 
 function drawHub(ctx: CanvasRenderingContext2D, p: Pt, s: number, t: number, escrow: number) {
   const [x, y] = p;
-  glow(ctx, x, y - 10 * s, 90 * s, "#acc6e9", 0.18);
+  glow(ctx, x, y - 10 * s, 110 * s, "#85b1ed", 0.35);
   ctx.fillStyle = "rgba(0,0,0,0.35)";
   ctx.beginPath(); ctx.ellipse(x, y + 26 * s, 62 * s, 19 * s, 0, 0, Math.PI * 2); ctx.fill();
 
-  drawSlab(ctx, x, y + 6 * s, 96 * s, 12 * s, { top: "#16324d", left: "#0b1e33", right: "#071526", edge: "#acc6e9" });
-  drawSlab(ctx, x, y - 4 * s, 64 * s, 10 * s, { top: "#1d4163", left: "#0f2740", right: "#0a1b2e", edge: "#acc6e9" });
+  drawSlab(ctx, x, y + 6 * s, 96 * s, 12 * s, { top: "#1f5f9e", left: "#144a7d", right: "#0d3459", edge: "#cbdbf2" });
+  drawSlab(ctx, x, y - 4 * s, 64 * s, 10 * s, { top: "#4b9bf0", left: "#2a76c4", right: "#1b5a99", edge: "#e3ecf9" });
 
   // Orbital ring with a travelling bright arc.
   const oy = y - 34 * s + Math.sin(t * 1.6) * 3 * s;
   ctx.lineWidth = 1.2;
-  ctx.strokeStyle = "rgba(172,198,233,0.35)";
+  ctx.strokeStyle = "rgba(203,219,242,0.55)";
   ctx.beginPath(); ctx.ellipse(x, oy, 54 * s, 20 * s, 0, 0, Math.PI * 2); ctx.stroke();
-  ctx.strokeStyle = "#acc6e9"; ctx.lineWidth = 2;
+  ctx.strokeStyle = "#8dd89f"; ctx.lineWidth = 3;
   ctx.beginPath(); ctx.ellipse(x, oy, 54 * s, 20 * s, 0, t * 0.9, t * 0.9 + 1.1); ctx.stroke();
 
-  glow(ctx, x, oy, 34 * s, "#acc6e9", 0.5 + 0.2 * Math.sin(t * 2));
-  ctx.fillStyle = "#e8f0f8";
+  glow(ctx, x, oy, 40 * s, "#85b1ed", 0.75 + 0.2 * Math.sin(t * 2));
+  ctx.fillStyle = "#f9faf3";
   ctx.beginPath(); ctx.arc(x, oy, 7 * s, 0, Math.PI * 2); ctx.fill();
 
   ctx.textAlign = "center";
   ctx.font = `700 ${Math.round(10 * s + 1)}px "DM Sans", system-ui, sans-serif`;
-  ctx.fillStyle = "#acc6e9";
+  ctx.fillStyle = "#cbdbf2";
   ctx.fillText("ARC ESCROW", x, y + 46 * s);
   ctx.font = `500 ${Math.round(9 * s + 1)}px "DM Sans", system-ui, sans-serif`;
-  ctx.fillStyle = "#7a94b0";
+  ctx.fillStyle = "#8dd89f";
   ctx.fillText(`${escrow.toFixed(2)} USDC LOCKED`, x, y + 60 * s);
 }
 
@@ -242,14 +244,14 @@ function drawIsland(
   const active = selected || hovered;
   const ringColor = STATUS_RING[status];
 
-  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.fillStyle = "rgba(5,12,23,0.45)";
   ctx.beginPath(); ctx.ellipse(x, y + 44 * s, 58 * s, 18 * s, 0, 0, Math.PI * 2); ctx.fill();
-  if (active) glow(ctx, x, y + 6 * s, 96 * s, b.accent, 0.28);
+  glow(ctx, x, y + 6 * s, 104 * s, b.accent, active ? 0.5 : 0.22);
 
-  const layer = (top: string, left: string, right: string) => ({ top, left, right, edge: rgba(b.accent, 0.45) });
-  drawSlab(ctx, x, y + 14 * s, 130 * s, 14 * s, layer(shade(b.ridge, 0.9), shade(b.base, 0.8), shade(b.base, 0.55)));
-  drawSlab(ctx, x, y + 2 * s, 104 * s, 12 * s, layer(shade(b.ridge, 1.05), shade(b.base, 0.9), shade(b.base, 0.62)));
-  drawSlab(ctx, x, y - 10 * s, 76 * s, 10 * s, layer(shade(b.ridge, 1.3), shade(b.base, 1.0), shade(b.base, 0.7)));
+  const layer = (top: string, left: string, right: string) => ({ top, left, right, edge: rgba(b.accent, 0.8) });
+  drawSlab(ctx, x, y + 14 * s, 130 * s, 14 * s, layer(shade(b.ridge, 0.95), shade(b.base, 0.95), shade(b.base, 0.68)));
+  drawSlab(ctx, x, y + 2 * s, 104 * s, 12 * s, layer(shade(b.ridge, 1.1), shade(b.base, 1.05), shade(b.base, 0.76)));
+  drawSlab(ctx, x, y - 10 * s, 76 * s, 10 * s, layer(shade(b.ridge, 1.3), shade(b.base, 1.15), shade(b.base, 0.82)));
 
   // A few small structures, placed deterministically per agent.
   for (let i = 0; i < 3; i++) {
@@ -257,12 +259,12 @@ function drawIsland(
     const oy = (seeded(n.id, i + 7) - 0.5) * 12 * s;
     const h = (6 + seeded(n.id, i + 13) * 10) * s;
     drawBox(ctx, x + ox, y - 10 * s + oy + 4 * s, 9 * s, h,
-      { top: shade(b.accent, 0.7), left: shade(b.base, 1.1), right: shade(b.base, 0.7), edge: rgba(b.accent, 0.4) });
+      { top: shade(b.accent, 0.95), left: shade(b.ridge, 0.95), right: shade(b.base, 0.9), edge: rgba(b.accent, 0.7) });
   }
 
   // Citadel tower and beacon.
   const baseY = y - 10 * s;
-  drawBox(ctx, x, baseY + 3 * s, 22 * s, 34 * s, { top: shade(b.accent, 0.8), left: shade(b.base, 1.25), right: shade(b.base, 0.75), edge: b.accent });
+  drawBox(ctx, x, baseY + 3 * s, 22 * s, 34 * s, { top: shade(b.accent, 1.05), left: shade(b.ridge, 1.1), right: shade(b.base, 1.0), edge: b.accent });
   drawRoof(ctx, x, baseY - 31 * s, 22 * s, 14 * s, b.accent, b.accent);
   const pulse = active ? 0.75 + 0.25 * Math.sin(t * 5) : 0.55 + 0.15 * Math.sin(t * 2 + seeded(n.id, 3) * 6);
   glow(ctx, x, baseY - 48 * s, 20 * s, b.accent, pulse);
@@ -298,12 +300,12 @@ function drawLabel(
   const sw = ctx.measureText(sub).width;
   const w = Math.max(tw, sw) + 20, h = fs * 2 + 10;
 
-  ctx.fillStyle = "rgba(2,8,16,0.88)";
+  ctx.fillStyle = "rgba(13,27,47,0.92)";
   roundRect(ctx, x - w / 2, y - h / 2, w, h, 4); ctx.fill();
-  ctx.strokeStyle = rgba(accent, active ? 0.9 : 0.5); ctx.lineWidth = 1; ctx.stroke();
+  ctx.strokeStyle = rgba(accent, active ? 1 : 0.8); ctx.lineWidth = 1; ctx.stroke();
   ctx.textAlign = "center";
   ctx.fillStyle = accent; ctx.font = `700 ${fs}px "DM Sans", system-ui, sans-serif`;
   ctx.fillText(title, x, y - 2);
-  ctx.fillStyle = "#6b7f95"; ctx.font = `500 ${fs - 2}px "DM Sans", system-ui, sans-serif`;
+  ctx.fillStyle = "#cbd5e1"; ctx.font = `500 ${fs - 2}px "DM Sans", system-ui, sans-serif`;
   ctx.fillText(sub, x, y + fs - 1);
 }

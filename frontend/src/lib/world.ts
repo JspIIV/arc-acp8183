@@ -22,7 +22,7 @@ export const STATUS_LABEL: Record<VisualStatus, string> = {
 };
 
 export const KIND_COLOR: Record<ContractKind, string> = {
-  SERVICE:        "#acc6e9",  // Arc accent blue
+  SERVICE:        "#85b1ed",  // Arc focus blue
   DATA_SHARING:   "#8dd89f",  // Arc green
   NON_AGGRESSION: "#cbdbf2",  // Arc light blue
 };
@@ -30,10 +30,12 @@ export const KIND_COLOR: Record<ContractKind, string> = {
 export interface Biome { base: string; ridge: string; accent: string }
 
 export const BIOME_BY_ARCHETYPE: Record<Archetype, Biome> = {
-  "Oracle Collective":  { base: "#0d2a4a", ridge: "#1a5080", accent: "#acc6e9" },
-  "Liquidity Nexus":    { base: "#0d3320", ridge: "#1a6040", accent: "#8dd89f" },
-  "Autonomous Arbiter": { base: "#1a1535", ridge: "#3d2e7a", accent: "#cbdbf2" },
-  "Defense Vanguard":   { base: "#2a1535", ridge: "#6b3080", accent: "#d9a0e8" },
+  // Vivid Arc-family hues: Arc blue, Arc green, periwinkle and teal. Red is reserved
+  // for danger/sanctioned and amber for "under review", so no biome uses them.
+  "Oracle Collective":  { base: "#1061a6", ridge: "#4b9bf0", accent: "#85b1ed" },
+  "Liquidity Nexus":    { base: "#1a8047", ridge: "#46c47c", accent: "#8dd89f" },
+  "Autonomous Arbiter": { base: "#4f5bc4", ridge: "#8d98f2", accent: "#cbdbf2" },
+  "Defense Vanguard":   { base: "#0f7c8a", ridge: "#3cc4d3", accent: "#9be7ef" },
 };
 
 // ── Noise helpers (pure, seed-stable) ─────────────────────────────────────────

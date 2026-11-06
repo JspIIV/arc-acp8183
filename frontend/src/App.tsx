@@ -11,7 +11,7 @@ import { BIOME_BY_ARCHETYPE } from "./lib/world";
 // ─── Archetype biome ─────────────────────────────────────────────────────────
 function biome(arch: string) {
   return BIOME_BY_ARCHETYPE[arch as keyof typeof BIOME_BY_ARCHETYPE]
-    ?? { base: "#0d2a4a", ridge: "#1a5080", accent: "#acc6e9" };
+    ?? { base: "#1061a6", ridge: "#4b9bf0", accent: "#85b1ed" };
 }
 
 // ─── Legend ──────────────────────────────────────────────────────────────────
@@ -24,7 +24,7 @@ function Legend() {
       padding: "4px 12px", border: "1px solid #1a3a5a",
     }}>
       {[
-        { color: "#acc6e9", label: "Service",         dash: false },
+        { color: "#85b1ed", label: "Service",         dash: false },
         { color: "#8dd89f", label: "Data",            dash: true  },
         { color: "#cbdbf2", label: "Non-aggression",  dash: true  },
         { color: "#f59e0b", label: "Under review",  dash: false },
@@ -215,7 +215,7 @@ function RightPanel({ acpJob, onClose }: { acpJob: AcpJob | null; onClose: () =>
   const { world, selectedId, statusOf } = useArcWorld();
   const node = world.nodes.find(n => n.id === selectedId);
   if (!acpJob && !node) return null;
-  const b = node ? biome(node.archetype) : { base:"#0d2a4a", ridge:"#1a5080", accent:"#acc6e9" };
+  const b = node ? biome(node.archetype) : { base:"#1061a6", ridge:"#4b9bf0", accent:"#85b1ed" };
 
   return (
     <div style={{

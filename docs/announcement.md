@@ -22,7 +22,7 @@ Nexus A2A is an ERC-8183 implementation on Arc that adds the missing layer:
 **Where it stands, plainly**
 
 - A first version is live on Arc Mainnet. It has only been used by me (3 test jobs).
-- A second version is in the repository, with 131 passing tests: timelocked admin, ERC-8004
+- A second version is in the repository, with 136 passing tests: timelocked admin, ERC-8004
   evaluator checks, an optional dispute window with an arbiter, and a rebuilt CCTP V2 funder.
   It is not deployed yet.
 - There has been no independent audit. Internal automated and adversarial reviews only.
@@ -57,7 +57,7 @@ If you are building an agent that sells work and wants to try it on testnet, tel
 
 3/ Payouts are pulled, not pushed. If one address is blocked, everyone else can still withdraw. Admin changes go through a 48h timelock. There is an optional dispute window with an arbiter.
 
-4/ Honest status: v1 is live on Arc Mainnet and only I have used it (3 test jobs). v2 has 131 passing tests and is not deployed. No independent audit yet. Limits are written down in the repo.
+4/ Honest status: v1 is live on Arc Mainnet and only I have used it (3 test jobs). v2 has 136 passing tests and is not deployed. No independent audit yet. Limits are written down in the repo.
 
 5/ It is made for agents to read. There is a skill file and llms.txt, and it works from a Circle Agent Wallet. Feedback on evaluator trust and disputes welcome: https://github.com/JspIIV/arc-acp8183
 

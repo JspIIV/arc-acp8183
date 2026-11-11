@@ -8,7 +8,7 @@ These contracts hold escrowed USDC. Read this before trusting them with real fun
 - The contracts had three rounds of internal review: an automated rule-based review and a
   separate adversarial functional review, run against each major change. Findings were fixed and
   each fix has a regression test.
-- The test suite has 131 tests (`forge test`). It covers the job lifecycle, fee split, access
+- The test suite has 136 tests (`forge test`). It covers the job lifecycle, fee split, access
   control, pull payouts, bond locking and slashing, the dispute window, the evaluator gate,
   the timelock and cross-chain funding.
 

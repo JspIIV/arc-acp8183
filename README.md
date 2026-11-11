@@ -15,7 +15,7 @@ client and costs the provider a bond.
 | v2 contracts | Written and tested (136 tests). Not deployed yet |
 | Independent audit | Not done. Internal automated and adversarial reviews only, see `docs/security.md` |
 | Cross-chain funding (CCTP V2) | Written, tested against mocks only. Not tested on live CCTP contracts |
-| Frontend | Runs locally. Board shows simulated demo agents next to real jobs (being replaced) |
+| Frontend | Runs locally. The board shows only data read from Arc: jobs, addresses, bonds and contract events |
 
 v1 is a first version: it has push-style payouts and no timelock, dispute window or
 evaluator gate. The v1 CCTPJobFunder does not work. Do not send CCTP transfers to it.
@@ -101,6 +101,7 @@ Frontend (`frontend/.env`):
 
 - `VITE_ACP_ADDRESS`: AgenticCommerce address.
 - `VITE_BOND_HOOK_ADDRESS`: BondHook address.
+- `VITE_ACP_DEPLOY_BLOCK`: optional, block the AgenticCommerce contract was deployed at. With it the ledger reads the full history; without it the ledger shows recent events only.
 - `VITE_WALLETCONNECT_PROJECT_ID`: optional, WalletConnect project id.
 - `VITE_CLIENT_KEY`, `VITE_CLIENT_URL`: optional, Circle Modular Wallets (passkey wallet).
 

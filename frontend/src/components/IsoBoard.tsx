@@ -1,20 +1,21 @@
 /**
  * IsoBoard: canvas 2D isometric archipelago.
- * Agent islands float around a central Arc escrow hub. Arcs between islands are live
- * agreements; a travelling dot means a call is in flight. Everything shown comes from
- * useArcWorld(): nothing is simulated here.
+ * Each island is an address that took part in a job on the ACP contract. Arcs are jobs
+ * between a client and a provider, coloured by job status; a travelling dot means the
+ * work is submitted and waiting for the evaluator. Everything shown comes from
+ * useArcWorld(), which reads Arc. Nothing is simulated.
  */
 import { useEffect, useRef } from "react";
-import { useArcWorld, lockedEscrow, agreementsOf } from "../context/ArcWorldContext";
-import { BIOME_BY_ARCHETYPE, KIND_COLOR, STATUS_LABEL, type VisualStatus } from "../lib/world";
-import type { AgentNode, Agreement } from "../lib/engine";
+import { useArcWorld } from "../context/ArcWorldContext";
+import { BIOME_BY_ROLE, ROLE_LABEL, type VisualStatus } from "../lib/world";
+import type { ChainAgent, Deal } from "../lib/chain";
 import {
   arcControl, drawBox, drawRoof, drawSlab, glow, quadPoint, rgba, roundRect, seeded, shade,
   type Pt,
 } from "../lib/isoDraw";
 
 // Island slots as a percentage of the canvas, hub in the middle.
-const SLOT_POS: Pt[] = [[34, 24], [66, 24], [20, 54], [80, 54], [50, 78]];
+const SLOT_POS: Pt[] = [[34, 24], [66, 24], [18, 50], [82, 50], [30, 76], [70, 76], [50, 88]];
 const HUB_POS: Pt = [50, 46];
 
 const STARS = Array.from({ length: 90 }, (_, i) => ({
@@ -22,7 +23,7 @@ const STARS = Array.from({ length: 90 }, (_, i) => ({
 }));
 
 const FALLBACK = { base: "#1061a6", ridge: "#4b9bf0", accent: "#85b1ed" };
-const STATUS_RING: Record<VisualStatus, string | null> = { active: null, contested: "#f59e0b", sanctioned: "#e86d7a" };
+const STATUS_RING: Record<VisualStatus, string | null> = { active: null, review: "#f59e0b" };
 
 interface Hit { id: string; x: number; y: number; s: number }
 
@@ -83,7 +84,7 @@ export function IsoBoard() {
       <canvas
         ref={canvasRef}
         role="img"
-        aria-label="Isometric map of agent islands connected by active agreements around the Arc escrow hub"
+        aria-label="Isometric map of addresses that take part in jobs, connected by jobs, around the Arc escrow hub"
         style={{ display: "block", cursor: hover.current ? "pointer" : "default" }}
         onMouseMove={(e) => {
           const id = pick(e);
@@ -115,16 +116,13 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, t: number, w:
   const s = Math.max(0.55, Math.min(1.25, Math.min(W / 760, H / 520)));
   drawBackdrop(ctx, W, H, t);
 
-  const nodes = w.world.nodes.slice(0, SLOT_POS.length);
+  const nodes = w.agents.slice(0, SLOT_POS.length);
   const at = new Map<string, Pt>();
   nodes.forEach((n, i) => at.set(n.id, [(SLOT_POS[i][0] / 100) * W, (SLOT_POS[i][1] / 100) * H]));
   const hub: Pt = [(HUB_POS[0] / 100) * W, (HUB_POS[1] / 100) * H];
 
   const focus = w.hoveredId ?? w.selectedId;
-  const agreements: Agreement[] = [
-    ...w.world.agreements.filter((a) => a.status === "proposed" || a.status === "active"),
-    ...w.acpAgreements,
-  ];
+  const agreements: Deal[] = w.deals;
 
   // Hub spokes first, then arcs, so islands sit on top.
   ctx.setLineDash([3, 6]);
@@ -134,11 +132,11 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, t: number, w:
     ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(hub[0], hub[1]); ctx.stroke();
   }
   ctx.setLineDash([]);
-  for (const ag of agreements) drawArc(ctx, ag, at, focus, w.busyContracts.has(ag.id), t);
+  for (const ag of agreements) drawArc(ctx, ag, at, focus, w.busyDeals.has(ag.id), t);
 
   // Painter's order: farther (smaller y) first, hub participates.
   const order: { y: number; paint: () => void }[] = [
-    { y: hub[1], paint: () => drawHub(ctx, hub, s, t, lockedEscrow(w.world)) },
+    { y: hub[1], paint: () => drawHub(ctx, hub, s, t, w.escrow) },
   ];
   out.length = 0;
   nodes.forEach((n) => {
@@ -148,10 +146,34 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, t: number, w:
     order.push({
       y: p[1],
       paint: () => drawIsland(ctx, n, p[0], p[1] + bob, s, t, w.selectedId === n.id, w.hoveredId === n.id,
-        w.statusOf(n.id), agreementsOf(w.world, n.id).filter((a) => a.status === "active").length),
+        w.statusOf(n.id)),
     });
   });
   order.sort((a, b) => a.y - b.y).forEach((o) => o.paint());
+  drawNotes(ctx, W, H, s, hub, w);
+}
+
+/** Honest empty states and the overflow count, so a quiet board is never mistaken for a broken one. */
+function drawNotes(ctx: CanvasRenderingContext2D, W: number, H: number, s: number, hub: Pt, w: World) {
+  const fs = Math.round(11 * s + 1);
+  let msg: string | null = null;
+  if (!w.configured) msg = "Set VITE_ACP_ADDRESS to read jobs from Arc";
+  else if (w.error) msg = `Could not read Arc: ${w.error.slice(0, 70)}`;
+  else if (w.loading) msg = "Reading jobs from Arc…";
+  else if (w.agents.length === 0) msg = "No jobs on this contract yet";
+  ctx.textAlign = "center";
+  if (msg) {
+    ctx.font = `600 ${fs}px "DM Sans", system-ui, sans-serif`;
+    ctx.fillStyle = "#cbdbf2";
+    ctx.fillText(msg, hub[0], hub[1] - 82 * s);
+  }
+  const extra = w.agents.length - SLOT_POS.length;
+  if (extra > 0) {
+    ctx.textAlign = "left";
+    ctx.font = `500 ${Math.max(9, fs - 2)}px "DM Sans", system-ui, sans-serif`;
+    ctx.fillStyle = "#85b1ed";
+    ctx.fillText(`+${extra} more ${extra === 1 ? "address" : "addresses"} not drawn`, 16, H - 14);
+  }
 }
 
 function drawBackdrop(ctx: CanvasRenderingContext2D, W: number, H: number, t: number) {
@@ -177,17 +199,18 @@ function drawBackdrop(ctx: CanvasRenderingContext2D, W: number, H: number, t: nu
   ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
 }
 
-function drawArc(ctx: CanvasRenderingContext2D, ag: Agreement, at: Map<string, Pt>, focus: string | null, busy: boolean, t: number) {
+function drawArc(ctx: CanvasRenderingContext2D, ag: Deal, at: Map<string, Pt>, focus: string | null, busy: boolean, t: number) {
   const a = at.get(ag.partyA), b = at.get(ag.partyB);
   if (!a || !b) return;
-  const color = KIND_COLOR[ag.kind] ?? "#acc6e9";
+  const color = ag.color;
   const c = arcControl(a, b);
-  const alpha = !focus ? 0.85 : focus === ag.partyA || focus === ag.partyB ? 1 : 0.12;
+  const base = !focus ? 0.85 : focus === ag.partyA || focus === ag.partyB ? 1 : 0.12;
+  const alpha = ag.live ? base : base * 0.5;
 
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.lineWidth = focus && alpha === 1 ? 3 : 2.2;
-  ctx.setLineDash(ag.kind === "DATA_SHARING" ? [8, 5] : ag.kind === "NON_AGGRESSION" ? [2, 6] : []);
+  ctx.setLineDash(!ag.live ? [2, 6] : ag.status === "Open" ? [8, 5] : []);
   ctx.lineDashOffset = -t * 14;
   const g = ctx.createLinearGradient(a[0], a[1], b[0], b[1]);
   g.addColorStop(0, rgba(color, 0.55)); g.addColorStop(0.5, rgba(color, 1)); g.addColorStop(1, rgba(color, 0.55));
@@ -237,10 +260,10 @@ function drawHub(ctx: CanvasRenderingContext2D, p: Pt, s: number, t: number, esc
 }
 
 function drawIsland(
-  ctx: CanvasRenderingContext2D, n: AgentNode, x: number, y: number, s: number, t: number,
-  selected: boolean, hovered: boolean, status: VisualStatus, deals: number,
+  ctx: CanvasRenderingContext2D, n: ChainAgent, x: number, y: number, s: number, t: number,
+  selected: boolean, hovered: boolean, status: VisualStatus,
 ) {
-  const b = BIOME_BY_ARCHETYPE[n.archetype as keyof typeof BIOME_BY_ARCHETYPE] ?? FALLBACK;
+  const b = BIOME_BY_ROLE[n.role] ?? FALLBACK;
   const active = selected || hovered;
   const ringColor = STATUS_RING[status];
 
@@ -274,7 +297,7 @@ function drawIsland(
   if (ringColor) {
     ctx.save();
     ctx.strokeStyle = ringColor; ctx.lineWidth = 1.6;
-    ctx.setLineDash(status === "sanctioned" ? [6, 4] : [2, 5]);
+    ctx.setLineDash([2, 5]);
     ctx.lineDashOffset = -t * 20;
     ctx.beginPath(); ctx.ellipse(x, y + 12 * s, 76 * s, 30 * s, 0, 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
@@ -284,16 +307,17 @@ function drawIsland(
     ctx.beginPath(); ctx.ellipse(x, y + 12 * s, 70 * s, 28 * s, 0, 0, Math.PI * 2); ctx.stroke();
   }
 
-  drawLabel(ctx, n, x, y - 74 * s, s, status, deals, active, ringColor ?? b.accent);
+  drawLabel(ctx, n, x, y - 74 * s, s, status, active, ringColor ?? b.accent);
 }
 
 function drawLabel(
-  ctx: CanvasRenderingContext2D, n: AgentNode, x: number, y: number, s: number,
-  status: VisualStatus, deals: number, active: boolean, accent: string,
+  ctx: CanvasRenderingContext2D, n: ChainAgent, x: number, y: number, s: number,
+  status: VisualStatus, active: boolean, accent: string,
 ) {
   const fs = Math.max(9, Math.round(10 * s + 1));
   const title = n.name.toUpperCase();
-  const sub = `${STATUS_LABEL[status]} · REP ${n.reputation} · ${deals} ${deals === 1 ? "DEAL" : "DEALS"}`;
+  const bond = n.bond !== null && n.roles.includes("provider") ? ` · BOND ${n.bond.toFixed(2)}` : "";
+  const sub = `${ROLE_LABEL[n.role]} · ${n.jobs} ${n.jobs === 1 ? "JOB" : "JOBS"}${status === "review" ? " · AWAITING REVIEW" : ""}${bond}`;
   ctx.font = `700 ${fs}px "DM Sans", system-ui, sans-serif`;
   const tw = ctx.measureText(title).width;
   ctx.font = `500 ${fs - 2}px "DM Sans", system-ui, sans-serif`;

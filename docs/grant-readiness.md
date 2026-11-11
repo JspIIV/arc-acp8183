@@ -14,10 +14,9 @@ duyurusundan alindi. Basvuru oncesi sayfayi tekrar kontrol et, kosullar degisebi
 
 ## Kritik eksikler (basvurudan once)
 
-1. **Arayuzde simule edilmis ajanlar var.** Tahtadaki bes ajan (PriceOracleBot vb.) kodda sabit
-   yazili, bakiyeleri ve itibarlari uydurma. Gercek is verisinin yaninda gosteriliyor. Degerlendirici
-   bunu gercek sanabilir. Ya acikca "SIMULATION" diye etiketlenmeli ya da gercek ERC-8004 ajanlari
-   ve zincirdeki islerle degistirilmeli.
+1. ~~Arayuzde simule edilmis ajanlar var.~~ **Cozuldu.** Simulasyon kodu silindi. Tahta artik
+   yalnizca Arc'tan okunan veriyi gosteriyor: isler, adresler, bond bakiyeleri ve kontrat olaylari.
+   Hala eksik olan: ERC-8004 kimlik/itibar verisi tahtada gosterilmiyor.
 2. **v2 mainnet'te degil.** Canli olan v1: pull odeme, timelock, itiraz penceresi yok ve CCTP
    funder'i calismiyor. Basvuruda "canli" denen sey v1 olmamali.
 3. **Bagimsiz denetim yok.** Para tutan kontrat icin degerlendiriciler bunu sorar. En azindan bir
@@ -39,7 +38,7 @@ duyurusundan alindi. Basvuru oncesi sayfayi tekrar kontrol et, kosullar degisebi
 ## Plan (sirayla)
 
 ### Faz 0: Hemen (bu hafta)
-- [ ] Arayuzdeki simule ajanlari kaldir veya etiketle (ben yaparim).
+- [x] Arayuzdeki simule ajanlari kaldir (yapildi).
 - [ ] Passkey cuzdanin calistigini dogrula (Circle Console domain ayari, sen).
 - [ ] Explorer'da kontrat kaynaklarini dogrula (sen). README "verified" demiyor, dogruysa ekle.
 - [ ] GitHub Security sekmesinde "Report a vulnerability"i ac (sen).

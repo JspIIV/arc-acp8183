@@ -32,6 +32,9 @@ export const USDC_ADDRESS   = "0x3600000000000000000000000000000000000000" as co
 export const USDC_DECIMALS  = 6;
 export const ACP_ADDRESS    = (import.meta.env.VITE_ACP_ADDRESS    ?? "0x0000000000000000000000000000000000000000") as `0x${string}`;
 export const BOND_HOOK_ADDRESS = (import.meta.env.VITE_BOND_HOOK_ADDRESS ?? "0x0000000000000000000000000000000000000000") as `0x${string}`;
+// Block the ACP contract was deployed at. Optional: it lets the ledger read the full history.
+const DEPLOY_BLOCK = import.meta.env.VITE_ACP_DEPLOY_BLOCK as string | undefined;
+export const ACP_DEPLOY_BLOCK: bigint | null = DEPLOY_BLOCK && /^\d+$/.test(DEPLOY_BLOCK) ? BigInt(DEPLOY_BLOCK) : null;
 export const ARC_CHAIN_ID   = arcMainnet.id;
 export const TARGET_CHAIN   = arcMainnet;
 

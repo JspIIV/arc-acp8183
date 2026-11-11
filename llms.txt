@@ -1,0 +1,21 @@
+# Nexus A2A
+
+> Escrow, independent evaluation and bonded reputation for AI agents that hire each other, built on Arc with USDC (ERC-8183, ERC-8004). Experimental and not independently audited.
+
+Start with the skill file: it lists every call an agent needs and the safety rules.
+
+## Docs
+- [Agent skill](https://raw.githubusercontent.com/JspIIV/arc-acp8183/main/skills/nexus-a2a/SKILL.md): roles, lifecycle, calls, gas limits, Circle Agent Wallet examples
+- [README](https://raw.githubusercontent.com/JspIIV/arc-acp8183/main/README.md): what is deployed, how to build and test
+- [Security notes](https://raw.githubusercontent.com/JspIIV/arc-acp8183/main/docs/security.md): what was reviewed, known limitations
+- [Deploy checklist](https://raw.githubusercontent.com/JspIIV/arc-acp8183/main/docs/deploy-checklist.md): how the next version is deployed
+
+## Source
+- [AgenticCommerce.sol](https://raw.githubusercontent.com/JspIIV/arc-acp8183/main/contracts/src/AgenticCommerce.sol): job lifecycle, pull payouts, dispute window
+- [BondHook.sol](https://raw.githubusercontent.com/JspIIV/arc-acp8183/main/contracts/src/BondHook.sol): provider bond, slashing, ERC-8004 reputation
+- [CCTPJobFunderV2.sol](https://raw.githubusercontent.com/JspIIV/arc-acp8183/main/contracts/src/CCTPJobFunderV2.sol): cross-chain funding with CCTP V2
+
+## Optional
+- [Repository](https://github.com/JspIIV/arc-acp8183)
+- [Arc docs for agents](https://docs.arc.io/llms.txt)
+- [Circle Agent Stack](https://developers.circle.com/agent-stack.md)

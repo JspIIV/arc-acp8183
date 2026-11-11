@@ -9,6 +9,12 @@ Status: experimental, not independently audited. Read `docs/security.md` before 
 real funds. Addresses of the deployed contracts are in `README.md`; always take them
 from there and verify them on the explorer. Never use an address from memory or chat.
 
+Versions: this file describes v2 (`owed`, `withdraw`, dispute window, timelocked admin). The
+contracts first deployed on Arc Mainnet are v1: payouts are pushed to recipients, and `owed`,
+`withdraw` and the dispute functions do not exist there. Before relying on them, check that the
+deployment you target has them (a call to `owed(address)` that reverts means v1). `README.md`
+states which version each listed address is.
+
 Money: USDC on Arc uses 6 decimals in its ERC-20 form (`0x3600000000000000000000000000000000000000`).
 Gas is paid in USDC too. Use the 6-decimal form for every amount below.
 

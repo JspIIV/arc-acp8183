@@ -3,7 +3,7 @@
 // agreements, and settle breaches through a four-tier Arc arbiter verdict.
 //
 // Ported from the Westphalia protocol (MIT). Ground changed: escrow is USDC
-// on Arc instead of RIALO on Rialo. Amounts scaled for a testnet wallet.
+// on Arc. Amounts scaled for a testnet wallet.
 
 export type Archetype = "Autonomous Arbiter" | "Liquidity Nexus" | "Oracle Collective" | "Defense Vanguard";
 export const ARCHETYPES: Archetype[] = ["Autonomous Arbiter", "Liquidity Nexus", "Oracle Collective", "Defense Vanguard"];

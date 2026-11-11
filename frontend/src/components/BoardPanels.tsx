@@ -3,12 +3,15 @@
 import { useState } from "react";
 import { PasskeyWalletPanel } from "./PasskeyWalletPanel";
 import { PayoutsPanel } from "./PayoutsPanel";
+import { BondPanel } from "./BondPanel";
+import { CreateJobPanel } from "./CreateJobPanel";
+import { JobActionsPanel } from "./JobActionsPanel";
 import { useArcWorld, type AcpJob } from "../context/ArcWorldContext";
-import { arcMainnet } from "../config";
+import { EXPLORER_URL, WRITES_ENABLED } from "../config";
 import { JOB_STATUS, STATUS_COLOR_BY_JOB, shortAddr, usdc, type LedgerKind } from "../lib/chain";
 import { BIOME_BY_ROLE, ROLE_LABEL, STATUS_COLOR } from "../lib/world";
 
-const EXPLORER = arcMainnet.blockExplorers.default.url;
+const EXPLORER = EXPLORER_URL;
 
 function Mono({ children }: { children: string }) {
   return <span style={{ fontFamily: "monospace", wordBreak: "break-all" }}>{children}</span>;
@@ -24,19 +27,30 @@ function timeAgo(ts: number | null, block: bigint): string {
 }
 
 // ─── Left panel ──────────────────────────────────────────────────────────────
-export function LeftPanel({ onSelectJob }: { onSelectJob: (j: AcpJob) => void }) {
+export function LeftPanel({ onSelectJob, onNewJob }: { onSelectJob: (j: AcpJob) => void; onNewJob: () => void }) {
   const w = useArcWorld();
   const [tab, setTab] = useState<"agents" | "jobs">("agents");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "rgba(5,12,23,0.97)", borderRight: "1px solid #0f2035" }}>
-      <div style={{ padding: "10px 10px 0", flexShrink: 0 }}>
-        <PasskeyWalletPanel />
+      <div style={{ flexShrink: 0, maxHeight: "48%", overflowY: "auto" }}>
+        <div style={{ padding: "10px 10px 0" }}>
+          <PasskeyWalletPanel />
+        </div>
+        <PayoutsPanel />
+        <BondPanel />
       </div>
-      <PayoutsPanel />
 
       <div style={{ padding: "8px 14px 8px", borderBottom: "1px solid #0f2035" }}>
-        <div style={{ fontSize: 9, letterSpacing: 2, color: "#4b6a8a", fontWeight: 700, marginBottom: 6 }}>ON-CHAIN</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <span style={{ fontSize: 9, letterSpacing: 2, color: "#4b6a8a", fontWeight: 700 }}>ON-CHAIN</span>
+          {WRITES_ENABLED && (
+            <button onClick={onNewJob} style={{
+              fontSize: 9, fontWeight: 700, letterSpacing: 0.8, color: "#050c17", background: "#acc6e9",
+              border: "none", borderRadius: 3, padding: "3px 8px", cursor: "pointer",
+            }}>+ NEW JOB</button>
+          )}
+        </div>
         <div style={{ display: "flex", gap: 4 }}>
           {(["agents", "jobs"] as const).map((t) => (
             <button key={t} onClick={() => setTab(t)} style={{
@@ -212,12 +226,12 @@ function Row({ label, children, color = "#acc6e9" }: { label: string; children: 
   );
 }
 
-export function RightPanel({ acpJob, onClose, onSelectJob }: {
-  acpJob: AcpJob | null; onClose: () => void; onSelectJob: (j: AcpJob) => void;
+export function RightPanel({ acpJob, creating, onClose, onSelectJob, onCreated }: {
+  acpJob: AcpJob | null; creating: boolean; onClose: () => void; onSelectJob: (j: AcpJob) => void; onCreated: (id: bigint) => void;
 }) {
   const w = useArcWorld();
   const node = w.agents.find((n) => n.id === w.selectedId);
-  if (!acpJob && !node) return null;
+  if (!acpJob && !node && !creating) return null;
   const b = node ? BIOME_BY_ROLE[node.role] : BIOME_BY_ROLE.provider;
   const myJobs = node ? w.jobs.filter((j) => [j.client, j.provider, j.evaluator].some((a) => a.toLowerCase() === node.id)) : [];
 
@@ -227,7 +241,7 @@ export function RightPanel({ acpJob, onClose, onSelectJob }: {
       borderLeft: "1px solid #0f2035", display: "flex", flexDirection: "column", zIndex: 20,
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderBottom: "1px solid #0f2035" }}>
-        <span style={{ fontSize: 9, letterSpacing: 2, color: "#4b6a8a", fontWeight: 700 }}>{acpJob ? "ACP JOB" : "ADDRESS"}</span>
+        <span style={{ fontSize: 9, letterSpacing: 2, color: "#4b6a8a", fontWeight: 700 }}>{acpJob ? "ACP JOB" : creating && !node ? "NEW JOB" : "ADDRESS"}</span>
         <button onClick={onClose} aria-label="Close" style={{ background: "transparent", border: "none", color: "#4b6a8a", cursor: "pointer", fontSize: 14 }}>✕</button>
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
@@ -244,7 +258,10 @@ export function RightPanel({ acpJob, onClose, onSelectJob }: {
             <Row label="EVALUATOR">{acpJob.evaluator}</Row>
             <Row label="EXPIRES">{new Date(Number(acpJob.expiredAt) * 1000).toISOString().replace("T", " ").slice(0, 16) + " UTC"}</Row>
             <a href={`${EXPLORER}/address/${acpJob.client}`} target="_blank" rel="noreferrer" style={{ fontSize: 10, color: "#85b1ed" }}>Client on explorer</a>
+            <JobActionsPanel job={acpJob} />
           </>
+        ) : creating && !node ? (
+          <CreateJobPanel onCreated={onCreated} />
         ) : node ? (
           <>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>

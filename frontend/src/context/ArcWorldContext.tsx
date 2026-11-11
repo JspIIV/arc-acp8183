@@ -22,6 +22,8 @@ interface ArcWorldState {
   agents:       ChainAgent[];
   deals:        Deal[];
   ledger:       LedgerEntry[];
+  /** Latest delivered work per job id, from JobSubmitted events inside the scanned window. */
+  submissions:  Map<string, { deliverable: string; uri: string }>;
   escrow:       number;
   head:         bigint | null;
   eventsFrom:   bigint | null;
@@ -61,6 +63,17 @@ export function ArcWorldProvider({ children }: { children: ReactNode }) {
     [snap],
   );
   const escrow = useMemo(() => lockedEscrow(jobs), [jobs]);
+  const submissions = useMemo(() => {
+    const out = new Map<string, { deliverable: string; uri: string; block: bigint }>();
+    for (const l of snap?.logs ?? []) {
+      if (l.name !== "JobSubmitted") continue;
+      const id = String(l.args.jobId);
+      const prev = out.get(id);
+      if (prev && prev.block > l.blockNumber) continue;
+      out.set(id, { deliverable: String(l.args.deliverable ?? ""), uri: String(l.args.uri ?? ""), block: l.blockNumber });
+    }
+    return out;
+  }, [snap]);
   const busyDeals = useMemo(() => new Set(deals.filter((d) => d.status === "Submitted").map((d) => d.id)), [deals]);
 
   const value: ArcWorldState = {
@@ -70,7 +83,7 @@ export function ArcWorldProvider({ children }: { children: ReactNode }) {
     eventsError: snap?.eventsError ?? null,
     jobs,
     jobCount:    snap?.jobCount ?? 0,
-    agents, deals, ledger, escrow,
+    agents, deals, ledger, escrow, submissions,
     head:        snap?.head ?? null,
     eventsFrom:  snap?.eventsFrom ?? null,
     eventsFloor: snap?.eventsFloor ?? null,

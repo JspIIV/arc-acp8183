@@ -3,6 +3,7 @@ import { ConnectKitButton } from "connectkit";
 import { IsoBoard } from "./components/IsoBoard";
 import { LeftPanel, BottomLedger, RightPanel } from "./components/BoardPanels";
 import { ArcWorldProvider, useArcWorld, type AcpJob } from "./context/ArcWorldContext";
+import { NETWORK_LABEL } from "./config";
 
 const LEGEND = [
   { color: "#85b1ed", label: "Open or funded" },
@@ -51,10 +52,16 @@ function Note({ tone, children }: { tone: "warn" | "error"; children: React.Reac
 
 function Inner() {
   const w = useArcWorld();
-  const [acpJob, setAcpJob] = useState<AcpJob | null>(null);
+  const [jobId, setJobId] = useState<bigint | null>(null);
+  const [creating, setCreating] = useState(false);
+  // Looked up from live data, so the panel updates after every transaction.
+  const acpJob: AcpJob | null = jobId === null ? null : w.jobs.find((j) => j.id === jobId) ?? null;
 
   // Picking an address on the board replaces any open job detail.
-  useEffect(() => { if (w.selectedId) setAcpJob(null); }, [w.selectedId]);
+  useEffect(() => { if (w.selectedId) { setJobId(null); setCreating(false); } }, [w.selectedId]);
+  // A job that was just created opens as soon as it shows up in the data.
+  useEffect(() => { if (creating && acpJob) setCreating(false); }, [creating, acpJob]);
+  const openJob = (j: AcpJob) => { w.setSelected(null); setCreating(false); setJobId(j.id); };
 
   return (
     <div style={{
@@ -72,7 +79,7 @@ function Inner() {
           }}>N</div>
           <span style={{ fontSize: 13, fontWeight: 700, color: "#c8d9ec", letterSpacing: 0.5 }}>NEXUS A2A</span>
           <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.5, color: "#8dd89f", border: "1px solid #8dd89f44", borderRadius: 2, padding: "2px 6px" }}>
-            ARC MAINNET
+            {NETWORK_LABEL}
           </span>
           <span style={{ fontSize: 9, color: "#4b6a8a" }}>Live data from the ACP contract</span>
         </div>
@@ -81,7 +88,7 @@ function Inner() {
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
         <div style={{ width: 240, flexShrink: 0, height: "100%", overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          <LeftPanel onSelectJob={(j) => { w.setSelected(null); setAcpJob(j); }} />
+          <LeftPanel onSelectJob={openJob} onNewJob={() => { w.setSelected(null); setJobId(null); setCreating(true); }} />
         </div>
         <div style={{ flex: 1, position: "relative", overflow: "hidden", background: "#050c17" }}>
           <IsoBoard />
@@ -89,8 +96,10 @@ function Inner() {
           <DataNote />
           <RightPanel
             acpJob={acpJob}
-            onClose={() => { setAcpJob(null); w.setSelected(null); }}
-            onSelectJob={(j) => { w.setSelected(null); setAcpJob(j); }}
+            creating={creating}
+            onClose={() => { setJobId(null); setCreating(false); w.setSelected(null); }}
+            onSelectJob={openJob}
+            onCreated={(id) => setJobId(id)}
           />
         </div>
       </div>

@@ -35,8 +35,15 @@ export const BOND_HOOK_ADDRESS = (import.meta.env.VITE_BOND_HOOK_ADDRESS ?? "0x0
 // Block the ACP contract was deployed at. Optional: it lets the ledger read the full history.
 const DEPLOY_BLOCK = import.meta.env.VITE_ACP_DEPLOY_BLOCK as string | undefined;
 export const ACP_DEPLOY_BLOCK: bigint | null = DEPLOY_BLOCK && /^\d+$/.test(DEPLOY_BLOCK) ? BigInt(DEPLOY_BLOCK) : null;
-export const ARC_CHAIN_ID   = arcMainnet.id;
-export const TARGET_CHAIN   = arcMainnet;
+// Which Arc network the app reads and writes. Testnet unless VITE_NETWORK=mainnet.
+const IS_MAINNET = (import.meta.env.VITE_NETWORK as string | undefined) === "mainnet";
+export const IS_TESTNET   = !IS_MAINNET;
+export const TARGET_CHAIN = IS_TESTNET ? arcTestnet : arcMainnet;
+export const ARC_CHAIN_ID = TARGET_CHAIN.id;
+export const NETWORK_LABEL = IS_TESTNET ? "ARC TESTNET" : "ARC MAINNET";
+export const EXPLORER_URL = TARGET_CHAIN.blockExplorers.default.url;
+// Transactions sent from this UI are limited to testnet. On mainnet the board is read-only.
+export const WRITES_ENABLED = IS_TESTNET;
 
 // WalletConnect project ID is optional — ConnectKit works without it (injected wallets only)
 const WC_ID = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined;

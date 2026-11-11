@@ -175,6 +175,7 @@ cast send $TIMELOCK "renounceRole(bytes32,address)" $ADMIN_ROLE <deployer-addres
 Set these in the frontend `.env`, then rebuild:
 
 ```
+VITE_NETWORK=testnet   # or mainnet (read-only in the UI)
 VITE_ACP_ADDRESS=<AgenticCommerce>
 VITE_BOND_HOOK_ADDRESS=<BondHook>
 ```

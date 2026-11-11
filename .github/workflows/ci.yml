@@ -43,3 +43,7 @@ jobs:
         working-directory: agents
       - run: bun run demo:local
         working-directory: agents
+      - run: bun install
+        working-directory: frontend
+      - run: bun run test:calls
+        working-directory: frontend

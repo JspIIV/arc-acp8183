@@ -29,6 +29,21 @@ jobs:
       - run: bunx tsc --noEmit
       - run: bun test tests
 
+  # Installs with npm, exactly as a new contributor would. The bun job above does not
+  # notice peer-dependency conflicts that make `npm install` fail.
+  frontend-npm:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+
   agents:
     runs-on: ubuntu-latest
     steps:

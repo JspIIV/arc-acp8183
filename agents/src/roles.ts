@@ -8,8 +8,9 @@ import {
   zeroAddress,
   type Address,
   type Hex,
+  type TransactionReceipt,
 } from "viem";
-import { ACP_ABI, BOND_ABI, ERC20_ABI, JOB_SUBMITTED, STATUS } from "./abi";
+import { ACP_ABI, BOND_ABI, ERC20_ABI, IDENTITY_ABI, JOB_SUBMITTED, STATUS } from "./abi";
 import type { Agent } from "./agent";
 
 export interface Deployment {
@@ -96,13 +97,29 @@ export class ProviderAgent {
     await this.agent.write(this.d.acp, ACP_ABI, "setBudget", [jobId, amount, "0x"]);
   }
 
+  /**
+   * Gets an ERC-8004 identity (or reuses the one already linked) and links it to the bond hook,
+   * so settlement can write this provider's reputation. Without it the hook emits
+   * ReputationSkipped("no agentId") instead.
+   */
+  async ensureAgentId(identityRegistry: Address, agentURI: string): Promise<bigint> {
+    const existing = await this.agent.read<bigint>(this.d.hook, BOND_ABI, "providerAgentId", [this.agent.address]);
+    if (existing !== 0n) return existing;
+    const receipt = await this.agent.write(identityRegistry, IDENTITY_ABI, "register", [agentURI]);
+    const [registered] = parseEventLogs({ abi: IDENTITY_ABI, eventName: "Registered", logs: receipt.logs });
+    if (!registered) throw new Error("Registered event not found");
+    const agentId = registered.args.agentId;
+    await this.agent.write(this.d.hook, BOND_ABI, "registerAgentId", [agentId]);
+    return agentId;
+  }
+
   /** Commits to the content by hash and publishes where to fetch it. */
-  async submit(jobId: bigint, content: string): Promise<Hex> {
+  async submit(jobId: bigint, content: string): Promise<{ hash: Hex; blockNumber: bigint }> {
     const uri = this.store.put(content);
     const hash = hashContent(content);
     const optParams = encodeAbiParameters(parseAbiParameters("address, uint256, string"), [zeroAddress, 0n, uri]);
-    await this.agent.write(this.d.acp, ACP_ABI, "submit", [jobId, hash, optParams]);
-    return hash;
+    const receipt = await this.agent.write(this.d.acp, ACP_ABI, "submit", [jobId, hash, optParams]);
+    return { hash, blockNumber: receipt.blockNumber };
   }
 }
 
@@ -111,17 +128,25 @@ export interface Verdict {
   reason: string;
 }
 
+/** A verdict plus the transaction that carried it, so callers can show it or read its logs. */
+export interface ReviewResult extends Verdict {
+  txHash: Hex;
+  blockNumber: bigint;
+  logs: TransactionReceipt["logs"];
+}
+
 /** Judges a deliverable. `check` is the task-specific part; the hash check is always done. */
 export class EvaluatorAgent {
   constructor(readonly agent: Agent, readonly d: Deployment, readonly store: DeliverableStore) {}
 
-  async review(jobId: bigint, check: (content: string) => Verdict): Promise<Verdict> {
+  /** `fromBlock` is where to start looking for the submission. Public RPCs cap the range, so pass the submit block. */
+  async review(jobId: bigint, check: (content: string) => Verdict, fromBlock = 0n): Promise<ReviewResult> {
     const job = await this.agent.read<Job>(this.d.acp, ACP_ABI, "getJob", [jobId]);
     if (job.evaluator.toLowerCase() !== this.agent.address.toLowerCase()) throw new Error("not the evaluator of this job");
     if (STATUS[job.status] !== "Submitted") throw new Error(`job ${jobId} is ${STATUS[job.status]}, nothing to review`);
 
     const logs = await this.agent.pub.getLogs({
-      address: this.d.acp, event: JOB_SUBMITTED, args: { jobId }, fromBlock: 0n,
+      address: this.d.acp, event: JOB_SUBMITTED, args: { jobId }, fromBlock,
     });
     const submitted = logs[logs.length - 1];
     if (!submitted?.args.deliverable || submitted.args.uri === undefined) throw new Error("no submission event found");
@@ -132,10 +157,10 @@ export class EvaluatorAgent {
     else if (hashContent(content) !== submitted.args.deliverable) verdict = { approved: false, reason: "hash mismatch" };
     else verdict = check(content);
 
-    await this.agent.write(
+    const receipt = await this.agent.write(
       this.d.acp, ACP_ABI, verdict.approved ? "complete" : "reject",
       [jobId, reasonOf(verdict.reason), "0x"], gasFor(job.hook),
     );
-    return verdict;
+    return { ...verdict, txHash: receipt.transactionHash, blockNumber: receipt.blockNumber, logs: receipt.logs };
   }
 }

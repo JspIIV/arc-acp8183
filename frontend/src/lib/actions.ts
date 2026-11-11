@@ -122,3 +122,32 @@ export function parseUsdcInput(text: string): bigint | null {
 export function settlementGas(job: ChainJob): bigint | undefined {
   return norm(job.hook) === norm(zeroAddress) ? undefined : 600_000n;
 }
+
+/** What happens to a rejection once the evaluator sends it. Mirrors AgenticCommerce.reject. */
+export type RejectOutcome =
+  | { kind: "final"; reason: "unsubmitted" | "disputes-off" | "no-arbiter" }
+  | { kind: "proposal"; windowSeconds: bigint };
+
+/**
+ * A rejection of submitted work is only a proposal when disputes are on and at least one
+ * registered arbiter is not a party to the job. Otherwise it is final at once, which can
+ * look like a broken dispute flow from the outside, so the screen says so before the click.
+ */
+export function rejectOutcome(job: ChainJob, disputeWindow: bigint, arbiters: readonly string[]): RejectOutcome {
+  if (job.status !== SUBMITTED) return { kind: "final", reason: "unsubmitted" };
+  if (disputeWindow === 0n) return { kind: "final", reason: "disputes-off" };
+  const parties = new Set([norm(job.client), norm(job.provider), norm(job.evaluator)]);
+  const eligible = arbiters.some((a) => !parties.has(norm(a)));
+  return eligible ? { kind: "proposal", windowSeconds: disputeWindow } : { kind: "final", reason: "no-arbiter" };
+}
+
+export function rejectOutcomeText(o: RejectOutcome): string {
+  if (o.kind === "proposal") {
+    const mins = Number(o.windowSeconds) / 60;
+    const span = mins >= 120 ? `${(mins / 60).toFixed(1)} hours` : mins >= 1 ? `${Math.round(mins)} minutes` : `${o.windowSeconds} seconds`;
+    return `This rejection will be a proposal first. The provider has ${span} to challenge it. If they do not, anyone can finalize it and the client is refunded.`;
+  }
+  if (o.reason === "unsubmitted") return "No work was submitted yet, so this rejection is final at once and the client is refunded.";
+  if (o.reason === "disputes-off") return "Disputes are switched off on this contract, so this rejection is final at once. The client is refunded and the provider cannot challenge it.";
+  return "No eligible arbiter: none is registered, or every registered arbiter is a party to this job. This rejection is final at once and cannot be challenged.";
+}

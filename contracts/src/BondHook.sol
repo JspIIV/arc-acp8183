@@ -314,10 +314,20 @@ contract BondHook is IACPHook, ReentrancyGuard, Ownable2Step {
     ///      so the failure is visible on-chain. This prevents burning ~170k gas on a
     ///      registry call that cannot succeed (mainnet tx 0xac1482c7…).
     ///      Settlement never reverts because of reputation — the guard and catch are both
-    ///      present so failure is always observable but never fatal.
+    ///      present so failure is always observable but never fatal. A provider without a
+    ///      registered agentId, or a hook without a registry, also emits ReputationSkipped.
     function _recordReputation(address provider, uint256 jobId, int128 score) internal {
         uint256 agentId = providerAgentId[provider];
-        if (agentId == 0 || address(reputationRegistry) == address(0)) return;
+        // Not recording is a visible outcome, not a silent one: an indexer can tell
+        // "no reputation was attempted" apart from "the registry accepted it".
+        if (agentId == 0) {
+            emit ReputationSkipped(provider, jobId, "no agentId");
+            return;
+        }
+        if (address(reputationRegistry) == address(0)) {
+            emit ReputationSkipped(provider, jobId, "no registry");
+            return;
+        }
 
         // Step 1: guard — skip if not enough gas to run the registry call
         if (gasleft() < MIN_REPUTATION_GAS) {

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { decodeAbiParameters, keccak256, stringToBytes } from "viem";
 import {
-  availableActions, deliverableHash, fundParams, parseUsdcInput, reasonToBytes32, settlementGas, submitParams,
-  type DisputeView,
+  availableActions, deliverableHash, fundParams, parseUsdcInput, reasonToBytes32, rejectOutcome, rejectOutcomeText,
+  settlementGas, submitParams, type DisputeView,
 } from "../src/lib/actions";
 import type { ChainJob } from "../src/lib/chain";
 
@@ -132,5 +132,38 @@ describe("encoders", () => {
   test("hooked jobs get an explicit settlement gas limit", () => {
     expect(settlementGas(job())).toBeUndefined();
     expect(settlementGas(job({ hook: "0x6666666666666666666666666666666666666666" }))).toBe(600_000n);
+  });
+});
+
+describe("rejectOutcome", () => {
+  const submitted = job({ status: 2 });
+  test("is a proposal when disputes are on and an arbiter is free", () => {
+    expect(rejectOutcome(submitted, 600n, [ARBITER])).toEqual({ kind: "proposal", windowSeconds: 600n });
+  });
+  test("is final when disputes are switched off", () => {
+    expect(rejectOutcome(submitted, 0n, [ARBITER])).toEqual({ kind: "final", reason: "disputes-off" });
+  });
+  test("is final when no arbiter is registered", () => {
+    expect(rejectOutcome(submitted, 600n, [])).toEqual({ kind: "final", reason: "no-arbiter" });
+  });
+  test("is final when every arbiter is a party to the job (the testnet case)", () => {
+    expect(rejectOutcome(submitted, 600n, [CLIENT, EVALUATOR.toUpperCase().replace("0X", "0x")])).toEqual({ kind: "final", reason: "no-arbiter" });
+  });
+  test("one free arbiter among conflicted ones is enough", () => {
+    expect(rejectOutcome(submitted, 600n, [PROVIDER, ARBITER]).kind).toBe("proposal");
+  });
+  test("rejecting before any submission is always final", () => {
+    expect(rejectOutcome(job({ status: 1 }), 600n, [ARBITER])).toEqual({ kind: "final", reason: "unsubmitted" });
+  });
+  test("each outcome has its own plain-language text", () => {
+    const texts = [
+      rejectOutcomeText({ kind: "proposal", windowSeconds: 600n }),
+      rejectOutcomeText({ kind: "final", reason: "disputes-off" }),
+      rejectOutcomeText({ kind: "final", reason: "no-arbiter" }),
+      rejectOutcomeText({ kind: "final", reason: "unsubmitted" }),
+    ];
+    expect(new Set(texts).size).toBe(4);
+    expect(texts[0]).toContain("10 minutes");
+    expect(texts[2]).toContain("No eligible arbiter");
   });
 });

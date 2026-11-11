@@ -732,6 +732,68 @@ contract BondHookTest is ACPBase {
         assertEq(repReg.callCount(), before + 1, "feedback recorded");
     }
 
+    // ── Reputation that cannot be attempted is visible on-chain ───────────────
+    function test_NoAgentId_EmitsReputationSkipped_OnComplete() public {
+        uint256 jobId = _createHookedFundedJob();   // provider never registered an agentId
+        vm.prank(provider);
+        acp.submit(jobId, bytes32("deliverable"), "");
+
+        uint256 before = repReg.callCount();
+        vm.expectEmit(true, true, false, true);
+        emit BondHook.ReputationSkipped(provider, jobId, "no agentId");
+        vm.prank(evaluator);
+        acp.complete(jobId, bytes32("done"), "");
+
+        assertEq(repReg.callCount(), before, "registry not called");
+        assertEq(uint8(acp.getJob(jobId).status),
+            uint8(IAgenticCommerce.JobStatus.Completed), "job still completes");
+    }
+
+    function test_NoAgentId_EmitsReputationSkipped_OnReject() public {
+        uint256 jobId = _createHookedFundedJob();
+        vm.prank(provider);
+        acp.submit(jobId, bytes32("deliverable"), "");
+
+        vm.expectEmit(true, true, false, true);
+        emit BondHook.ReputationSkipped(provider, jobId, "no agentId");
+        vm.prank(evaluator);
+        acp.reject(jobId, bytes32("bad"), "");
+
+        assertEq(uint8(acp.getJob(jobId).status),
+            uint8(IAgenticCommerce.JobStatus.Rejected), "job still rejects");
+    }
+
+    function test_NoRegistry_EmitsReputationSkipped() public {
+        vm.prank(owner);
+        BondHook bare = new BondHook(address(usdc), address(acp), address(0), address(idReg));
+        vm.prank(owner);
+        acp.setHookWhitelist(address(bare), true);
+
+        uint256 AGENT_ID = 21;
+        idReg.setOwner(AGENT_ID, provider);
+        vm.prank(provider);
+        usdc.approve(address(bare), type(uint256).max);
+        vm.prank(provider);
+        bare.stakeBond(BOND_AMOUNT);
+        vm.prank(provider);
+        bare.registerAgentId(AGENT_ID);
+
+        vm.prank(client);
+        uint256 jobId = acp.createJob(provider, evaluator,
+            block.timestamp + EXPIRY_OFFSET, "no-registry", address(bare));
+        vm.prank(provider);
+        acp.setBudget(jobId, BUDGET, "");
+        vm.prank(client);
+        acp.fund(jobId, "");
+        vm.prank(provider);
+        acp.submit(jobId, bytes32("work"), "");
+
+        vm.expectEmit(true, true, false, true);
+        emit BondHook.ReputationSkipped(provider, jobId, "no registry");
+        vm.prank(evaluator);
+        acp.complete(jobId, bytes32("ok"), "");
+    }
+
     // ── Step 1: reverting registry emits ReputationFailed, job still completes ─
     function test_Step1_RevertingRegistry_EmitsReputationFailed() public {
         // Deploy a registry that always reverts

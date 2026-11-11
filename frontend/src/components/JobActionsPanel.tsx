@@ -9,8 +9,8 @@ import { ACP_ADDRESS, ARC_CHAIN_ID, NETWORK_LABEL, USDC_ADDRESS, WRITES_ENABLED 
 import { useArcWorld } from "../context/ArcWorldContext";
 import { norm, type ChainJob } from "../lib/chain";
 import {
-  availableActions, deliverableHash, fundParams, parseUsdcInput, reasonToBytes32, settlementGas, submitParams,
-  type ActionId, type DisputeView,
+  availableActions, deliverableHash, fundParams, parseUsdcInput, reasonToBytes32, rejectOutcome, rejectOutcomeText,
+  settlementGas, submitParams, type ActionId, type DisputeView,
 } from "../lib/actions";
 import { useNow, useTx } from "../hooks/useTx";
 import { Btn, C, Field, Hint, Input, Section, TextArea } from "./ui";
@@ -36,6 +36,14 @@ export function JobActionsPanel({ job }: { job: ChainJob }) {
     address: ACP_ADDRESS, abi: ACP_ABI, functionName: "disputeDeposit", chainId: ARC_CHAIN_ID,
     query: { enabled: job.status === 2, retry: false },
   });
+  const windowQ = useReadContract({
+    address: ACP_ADDRESS, abi: ACP_ABI, functionName: "disputeWindow", chainId: ARC_CHAIN_ID,
+    query: { enabled: job.status === 2, refetchInterval: 30_000, retry: false },
+  });
+  const arbitersQ = useReadContract({
+    address: ACP_ADDRESS, abi: ACP_ABI, functionName: "arbiters", chainId: ARC_CHAIN_ID,
+    query: { enabled: job.status === 2, refetchInterval: 30_000, retry: false },
+  });
   const allowanceQ = useReadContract({
     address: USDC_ADDRESS, abi: ERC20_ABI, functionName: "allowance",
     args: [address ?? "0x0000000000000000000000000000000000000000", ACP_ADDRESS], chainId: ARC_CHAIN_ID,
@@ -55,6 +63,10 @@ export function JobActionsPanel({ job }: { job: ChainJob }) {
   const allowance = (allowanceQ.data as bigint | undefined) ?? 0n;
   const deposit = (depositQ.data as bigint | undefined) ?? 0n;
   const submission = submissions.get(job.id.toString());
+  // Only explain the outcome once both reads succeeded; a contract without disputes just settles.
+  const outcome = job.status === 1 ? rejectOutcome(job, 0n, []) : windowQ.data !== undefined && arbitersQ.data !== undefined
+    ? rejectOutcome(job, BigInt(windowQ.data as bigint), arbitersQ.data as readonly string[])
+    : windowQ.isError ? rejectOutcome(job, 0n, []) : null;
   const send = (label: string, functionName: string, args: unknown[], gas?: bigint) =>
     run(label, { address: ACP_ADDRESS, abi: ABI, functionName, args, gas });
   const approve = (label: string, amount: bigint) =>
@@ -122,7 +134,7 @@ export function JobActionsPanel({ job }: { job: ChainJob }) {
             {has("complete") && <Btn busy={busy === "Approve work"} disabled={needReason} onClick={() => send("Approve work", "complete", [job.id, reasonToBytes32(reason), "0x"], settlementGas(job))}>Approve and release payment</Btn>}
             {has("reject") && <Btn kind="danger" busy={busy === "Reject"} disabled={needReason} onClick={() => send("Reject", "reject", [job.id, reasonToBytes32(reason), "0x"], settlementGas(job))}>Reject</Btn>}
           </div>
-          {has("reject") && dispute !== null && <div style={{ fontSize: 9, color: C.muted, marginTop: 6 }}>If a dispute window is configured, a rejection only becomes final after the provider's challenge period.</div>}
+          {has("reject") && outcome && <Hint tone={outcome.kind === "final" && outcome.reason !== "unsubmitted" ? "warn" : undefined}>{rejectOutcomeText(outcome)}</Hint>}
         </Section>
       )}
 

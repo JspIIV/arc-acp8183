@@ -70,7 +70,7 @@ Rakamlari (is sayisi, hacim) gercekci ve dogrulanabilir yaz. Grant miktarini pro
 - **Solution:** ERC-8183 jobs with an independent evaluator, provider bonds, ERC-8004 reputation, pull payouts, optional dispute window.
 - **Why Arc:** USDC native gas, predictable fees, sub-second finality, ERC-8004 registries on Arc.
 - **Circle products:** USDC, CCTP V2 (cross-chain funding), Modular Wallets (passkey), planned: Developer-Controlled Wallets, Gateway.
-- **Shipped:** v1 contracts on Arc Mainnet, v2 with 136 tests, deploy tooling, frontend.
+- **Shipped:** v1 contracts on Arc Mainnet, v2 with 139 tests, deploy tooling, frontend.
 - **Traction:** fill in with real numbers only.
 - **Team:** fill in.
 - **Revenue path:** platform fee (default 2%) on completed jobs.

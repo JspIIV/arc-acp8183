@@ -31,6 +31,32 @@ The demo asserts these amounts and exits non-zero if any of them is off.
 Deliverables are kept in an in-memory store in the demo. Replace `DeliverableStore` with IPFS or
 any content-addressed storage; the evaluator only needs `get(uri)`.
 
+## Running on Arc Testnet
+
+The same agents can run against the v2 deployment on Arc Testnet (addresses in `../README.md`).
+These are real transactions with test money.
+
+```
+cd agents
+bun run testnet:keys    # once: writes three keys to .env.testnet (git-ignored), prints the addresses
+# fund the three addresses with test USDC; gas on Arc is paid in USDC
+bun run demo:testnet    # add --skip-reject to leave out the slower rejection scenario
+```
+
+What it does beyond the local demo:
+
+- The provider gets an ERC-8004 identity from the testnet IdentityRegistry and links it to the bond
+  hook, so settlement writes reputation. The run checks that the settlement transaction carries a
+  `NewFeedback` event and no `ReputationSkipped` or `ReputationFailed`, and that the registry's
+  entry count went up by one.
+- It reads the contract settings first and says whether a rejection will be a proposal or final.
+  With the current settings it is a proposal, so scenario B waits for the 600 s challenge window
+  and then finalizes. Expect about ten minutes for that scenario.
+- It does not run the dispute scenario: choosing an arbiter is an owner action, and the agents
+  here do not hold the owner key.
+
+Keep `.env.testnet` out of git. It holds private keys.
+
 ## Using a Circle Agent Wallet instead of a local key
 
 Circle Agent Wallets support Arc and can run any contract write with `circle wallet execute`
@@ -42,5 +68,5 @@ is the single place to swap in such an adapter.
 ## Limits
 
 - The demo uses a mock USDC and the well-known anvil test accounts. Do not reuse those keys anywhere real.
-- The bond hook runs without ERC-8004 registries here (reputation writes are skipped).
+- The local demo runs the bond hook without ERC-8004 registries, so reputation writes are skipped there (the hook now emits `ReputationSkipped`). The Arc Testnet run records reputation for real.
 - The evaluator's check is a toy rule. A real evaluator needs a check that fits the task.

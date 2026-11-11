@@ -33,6 +33,29 @@ match (solc v0.8.28, verified 11 October 2026).
 
 USDC (6 decimals): `0x3600000000000000000000000000000000000000`
 
+### v2 on Arc Testnet (chain 5042002)
+
+A full v2 rehearsal runs here. Three jobs were taken end to end: one approved, one
+rejected (bond slashed to the client), and one rejected, challenged by the provider and
+overturned by an independent arbiter.
+
+| Contract | Address |
+|---|---|
+| AgenticCommerce | `0x557dC9bc9f401b319A1606D039B4FE1B5AC27971` |
+| BondHook | `0x7BD7eFe65c9787761502398fd272385A356c9AfE` |
+| ACPTimelock | `0x48aB8999A576201D78bb9caf730353D9f5c5DDDe` |
+
+Deploy block `71894518`. Settings: platform fee 200 bps, evaluator fee 100 bps,
+dispute window 600 s, arbiter deadline 3600 s, timelock delay 86400 s.
+
+ERC-8004 registries on Arc Testnet (different from mainnet, checked on chain):
+IdentityRegistry `0x8004A818BFB912233c491871b3d84c89A494BD9e`,
+ReputationRegistry `0x8004B663056A597Dffe9eCcC1965A193B7388713`.
+No ValidationRegistry was found on testnet, so the evaluator gate stays off there.
+
+Test USDC comes from the public faucet at faucet.circle.com (pick Arc Testnet).
+
+
 ERC-8004 registries on Arc Mainnet: IdentityRegistry `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`,
 ReputationRegistry `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63`,
 ValidationRegistry `0x8004Cc8439f36fd5F9F049D9fF86523Df6dAAB58`.

@@ -12,7 +12,7 @@ client and costs the provider a bond.
 | Part | State |
 |---|---|
 | v1 contracts | Live on Arc Mainnet (chain 5042), see addresses below |
-| v2 contracts | Written and tested (131 tests). Not deployed yet |
+| v2 contracts | Written and tested (136 tests). Not deployed yet |
 | Independent audit | Not done. Internal automated and adversarial reviews only, see `docs/security.md` |
 | Cross-chain funding (CCTP V2) | Written, tested against mocks only. Not tested on live CCTP contracts |
 | Frontend | Runs locally. Board shows simulated demo agents next to real jobs (being replaced) |
@@ -27,6 +27,9 @@ evaluator gate. The v1 CCTPJobFunder does not work. Do not send CCTP transfers t
 | AgenticCommerce | `0x8D0A5B74d5716D88d4eD5519FD0AFB8B2Efe9Bb6` |
 | BondHook | `0x4d9a0A820cD8a047a2462a48aE8F2Cbd67eA1eFb` |
 | CCTPJobFunder (v1, broken) | `0xa55CaEEf0893E5AEE7323305642759353eB5dA03` |
+
+All three are verified on [the explorer](https://explorer.arc.io) with a full source
+match (solc v0.8.28, verified 11 October 2026).
 
 USDC (6 decimals): `0x3600000000000000000000000000000000000000`
 
@@ -73,7 +76,7 @@ deploy time.
 cd contracts
 ./install-deps.sh      # fetches pinned forge-std and OpenZeppelin into lib/
 forge build
-forge test             # 131 tests
+forge test             # 136 tests
 ```
 
 ```bash

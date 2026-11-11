@@ -116,3 +116,7 @@ Deploy script: see the header of `contracts/script/Deploy.s.sol`.
 ## License
 
 MIT, see `LICENSE`.
+
+## Reference agents
+
+`agents/` has a client, a provider and an evaluator that run a full job on a local chain: `cd agents && bun install && bun run demo:local`. Agent-readable instructions are in `skills/nexus-a2a/SKILL.md` and `llms.txt`.

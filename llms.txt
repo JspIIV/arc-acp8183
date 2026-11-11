@@ -10,6 +10,8 @@ Start with the skill file: it lists every call an agent needs and the safety rul
 - [Security notes](https://raw.githubusercontent.com/JspIIV/arc-acp8183/main/docs/security.md): what was reviewed, known limitations
 - [Deploy checklist](https://raw.githubusercontent.com/JspIIV/arc-acp8183/main/docs/deploy-checklist.md): how the next version is deployed
 
+- [Reference agents](https://github.com/JspIIV/arc-acp8183/tree/main/agents): client, provider and evaluator agents with a runnable local demo
+
 ## Source
 - [AgenticCommerce.sol](https://raw.githubusercontent.com/JspIIV/arc-acp8183/main/contracts/src/AgenticCommerce.sol): job lifecycle, pull payouts, dispute window
 - [BondHook.sol](https://raw.githubusercontent.com/JspIIV/arc-acp8183/main/contracts/src/BondHook.sol): provider bond, slashing, ERC-8004 reputation

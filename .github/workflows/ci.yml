@@ -27,3 +27,18 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install
       - run: bunx tsc --noEmit
+
+  agents:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: oven-sh/setup-bun@v2
+      - run: ./install-deps.sh && forge build
+        working-directory: contracts
+      - run: bun install
+        working-directory: agents
+      - run: bunx tsc --noEmit
+        working-directory: agents
+      - run: bun run demo:local
+        working-directory: agents

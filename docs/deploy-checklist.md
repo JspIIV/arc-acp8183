@@ -188,4 +188,4 @@ validation gate. Add them before exposing those flows in the UI.
 - Not professionally audited.
 - Dispute arbiter selection is block-data based. Treat it as a trusted-arbiter model.
 - The timelock proposer and executor are only as safe as the keys behind them.
-- CCTP funding (V2) has only been tested against mocks of Circle's documented message layout, not the live CCTP contracts.
+- CCTP funding (V2) has been tried on testnet against Circle's live CCTP V2 contracts (`docs/testnet-cctp.md`): the redeem path and the failure and recovery path work. Mainnet, standard (finalized) transfers and other source chains have not been tried. Remember that the ACP owner must call `setTrustedFunder` for the Arc funder or every funding falls into recovery.

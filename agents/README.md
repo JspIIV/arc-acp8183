@@ -71,6 +71,24 @@ The reputation registry showed 3 entries for the provider after the run (two app
 rejection). The summary value is an average, so it prints as a whole number. An earlier run
 (job 4) is not in the table: it stopped on an over-strict balance check in the script, which is fixed.
 
+### A longer run: `loop:testnet`
+
+`bun run loop:testnet` (add `--jobs 26 --seed 42`) runs seven agents (2 clients, 3 providers,
+2 evaluators) through a mix of jobs: mostly approved, some rejected (bond slashed), a couple left to
+expire. Budgets are tiny (0.02 to 0.10 USDC) and vary, and providers and evaluators take different
+amounts of time. It tops the agents up from each other, moves money back from providers to clients
+now and then, and writes `docs/testnet/activity.json` (every job and transaction) and
+`docs/testnet-activity.md` (the numbers and a link for every step). The final statuses are read back
+from the chain, not from the script's memory. These are our own agents and test money, so the
+numbers are a record that the system works, not evidence of outside usage.
+
+### CCTP V2 on testnet: `cctp:testnet`
+
+`bun run cctp:testnet deploy | send | recover | status | report` tries `CCTPJobFunderV2` with Circle's
+real CCTP V2 contracts (Base Sepolia to Arc Testnet). See `../docs/testnet-cctp.md` for the contracts,
+the transactions and what the runs show. It needs the ACP owner to call `setTrustedFunder` for the Arc
+funder before a funding can succeed; without that, the money is set aside for the client to recover.
+
 ## Using a Circle Agent Wallet instead of a local key
 
 Circle Agent Wallets support Arc and can run any contract write with `circle wallet execute`

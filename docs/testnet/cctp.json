@@ -1,0 +1,44 @@
+{
+  "deployTxs": [
+    {
+      "what": "deploy Arc funder",
+      "hash": "0xb7cf8e4c13d34ef2280aa5d6b35d6636cdf2f1abe97df55b9199ce73d2c1a95e"
+    },
+    {
+      "what": "deploy Base Sepolia funder",
+      "hash": "0x49bed5f86c24a2f1d8b88666453ae5bbd2f4b23910aa662e7bee330743b7fa5f"
+    },
+    {
+      "what": "Arc funder setRemote(6)",
+      "hash": "0x0a27c781364e38fa504b470d3d11edcb9054f6a3b4ce0f4a4d30781670d3b5e5"
+    },
+    {
+      "what": "Base funder setRemote(26)",
+      "hash": "0xd0b0cd6d76d81bcc12f837987cf025f49f9cdf5f872fea6d89e126801c211987"
+    }
+  ],
+  "transfers": [
+    {
+      "label": "untrusted funder (failure path)",
+      "at": "2026-11-12T17:22:53.537Z",
+      "jobId": "33",
+      "budget": "50000",
+      "amount": "100000",
+      "maxFee": "100",
+      "funderTrusted": false,
+      "notes": [
+        "job status after: Open",
+        "recovery balance: 0 USDC -> 0.099987 USDC",
+        "recovered 0.099987 USDC; wallet 19.937167 USDC -> 20.035815 USDC (gas is paid in USDC); left 0 USDC",
+        "cause confirmed: simulating fundOnBehalfOf from the funder's address reverts with NotTrustedFunder (0xd4cee824), because the ACP owner has not yet called setTrustedFunder for this funder"
+      ],
+      "burnTx": "0x707974fe2709b01c3fd059b8f97820db3574fc12a26df55b73fb067e4803569f",
+      "redeemTx": "0x8b8523d5b178fde16ec4ce75eaf9ba067f40fec627855ae529e20220c2658112",
+      "outcome": "funding failed, money set aside for recovery",
+      "minted": "99987",
+      "recoverTx": "0xdd92812f877838bc7bf3876e418f73b63dbbdd7eb22a641e52bdd80a3656868d"
+    }
+  ],
+  "arcFunder": "0xa5371d72cc299308bfe7202f3b622295ea301655",
+  "baseFunder": "0xa5371d72cc299308bfe7202f3b622295ea301655"
+}

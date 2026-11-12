@@ -8,7 +8,9 @@
     "demo:local": "bun src/local.ts",
     "typecheck": "tsc --noEmit",
     "testnet:keys": "bun src/testnet-keys.ts",
-    "demo:testnet": "bun --env-file=.env.testnet src/testnet.ts"
+    "demo:testnet": "bun --env-file=.env.testnet src/testnet.ts",
+    "loop:testnet": "bun --env-file=.env.testnet src/loop.ts",
+    "cctp:testnet": "bun --env-file=.env.testnet src/cctp-testnet.ts"
   },
   "dependencies": {
     "viem": "2.57.5"

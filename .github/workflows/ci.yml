@@ -56,6 +56,8 @@ jobs:
         working-directory: agents
       - run: bunx tsc --noEmit
         working-directory: agents
+      - run: bun test tests
+        working-directory: agents
       - run: bun run demo:local
         working-directory: agents
       - run: bun install

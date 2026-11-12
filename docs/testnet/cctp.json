@@ -37,6 +37,32 @@
       "outcome": "funding failed, money set aside for recovery",
       "minted": "99987",
       "recoverTx": "0xdd92812f877838bc7bf3876e418f73b63dbbdd7eb22a641e52bdd80a3656868d"
+    },
+    {
+      "label": "trusted funder (success path)",
+      "at": "2026-11-12T17:58:36.857Z",
+      "jobId": "34",
+      "budget": "50000",
+      "amount": "100000",
+      "maxFee": "100",
+      "funderTrusted": true,
+      "notes": [
+        "job status after: Funded",
+        "recovery balance: 0 USDC -> 0.049987 USDC",
+        "recovered 0.049987 USDC; wallet 20.022973 USDC -> 20.071621 USDC (gas is paid in USDC); left 0 USDC"
+      ],
+      "burnTx": "0x5dd6d51ed443ed1ec62fb4a449ec9d6c97a0a19c231576390a542fced89e1979",
+      "redeemTx": "0xe818b9ba1ee7aa0bd3eb9ff5109b7ba70506f5949f056328a7dc4d4691d15fe4",
+      "outcome": "job funded",
+      "minted": "99987",
+      "recoverTx": "0x30286c189d7cb935d70b413d8dcb437ddc6cc93a37f59803447a9a1d4cd1c9d4",
+      "finish": {
+        "submitTx": "0xae24cc8e2a7a7836ede91fd847629379c600667f4f43f94f3b993ee86fa948b0",
+        "decisionTx": "0x1c5c11619d664301d1f0a4c433215707df909533cb77f3476734cfedfc0a103a",
+        "verdict": "meets the brief",
+        "providerCredited": "48500",
+        "finalStatus": "Completed"
+      }
     }
   ],
   "arcFunder": "0xa5371d72cc299308bfe7202f3b622295ea301655",

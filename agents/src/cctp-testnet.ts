@@ -247,6 +247,24 @@ async function report(): Promise<void> {
   }
   out.push("");
   for (const t of rec.transfers) if (t.notes.length) out.push(`- ${t.label}: ${t.notes.join("; ")}`);
+  const funded = rec.transfers.filter((t) => t.outcome === "job funded" && t.minted);
+  if (funded.length) {
+    out.push("", "## The success path in detail", "");
+    for (const t of funded) {
+      const minted = BigInt(t.minted!), budget = BigInt(t.budget), burned = BigInt(t.amount);
+      out.push(`**${t.label}, job ${t.jobId}**`, "");
+      out.push(`- Burned on Base Sepolia: ${usdc(burned)} ([burn](https://sepolia.basescan.org/tx/${t.burnTx}))`);
+      out.push(`- Minted on Arc after the fast-transfer fee: ${usdc(minted)} (fee ${usdc(burned - minted)})`);
+      out.push(`- Job funded in the same transaction as the redeem ([redeem](${explorerTx(t.redeemTx!)})): the ACP took the ${usdc(budget)} budget and the job went from Open to Funded`);
+      out.push(`- Events in the redeem transaction: \`JobFunded(${t.jobId}, client, ${budget}, ${minted})\` and \`RecoveryCredited(client, ${minted - budget})\` (amounts in 6-decimal units)`);
+      out.push(`- Surplus ${usdc(minted - budget)} (minted minus budget) was credited to the client's recovery balance, then withdrawn by the client ([recovery](${explorerTx(t.recoverTx!)}))`);
+      const f = (t as { finish?: { submitTx?: string; decisionTx?: string; providerCredited: string; finalStatus: string } }).finish;
+      if (f) {
+        out.push(`- Followed to payment: provider submitted ([submit](${explorerTx(f.submitTx!)})), the evaluator approved ([decision](${explorerTx(f.decisionTx!)})), the provider was credited ${usdc(BigInt(f.providerCredited))} and the job ended ${f.finalStatus}`);
+      }
+      out.push("");
+    }
+  }
   out.push("", "## What this shows and what it does not", "");
   out.push("- Shows: the message layout and field checks work against real attested messages, the fast-transfer fee is taken from the mint (burned amount minus fee is what the funder sees), redemption and funding happen in one transaction, and a failed funding leaves the money recoverable by the client.");
   out.push("- Does not show: mainnet behaviour, standard (finalized) transfers, other source chains, or load. The contract has no independent audit.");

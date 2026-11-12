@@ -14,7 +14,7 @@ client and costs the provider a bond.
 | v1 contracts | Live on Arc Mainnet (chain 5042), see addresses below |
 | v2 contracts | Written and tested (139 tests). Live on Arc Testnet (see below). Not on mainnet yet |
 | Independent audit | Not done. Internal automated and adversarial reviews only, see `docs/security.md` |
-| Cross-chain funding (CCTP V2) | Unit-tested, and tried on testnet with Circle's real CCTP V2 contracts (Base Sepolia to Arc): a real attested transfer was redeemed and the failure path (money set aside, then recovered by the client) works. The success path (job funded) is not yet shown because the ACP owner has not trusted the testnet funder. See `docs/testnet-cctp.md` |
+| Cross-chain funding (CCTP V2) | Unit-tested, and tried on testnet with Circle's real CCTP V2 contracts (Base Sepolia to Arc). A real attested transfer funded a job (Open to Funded in the redeem transaction), the surplus went to the client's recovery balance, and the job was followed to payment. The failure path (funder not trusted, money set aside and recovered) works too. Mainnet, standard (finalized) transfers and other source chains are untried. See `docs/testnet-cctp.md` |
 | Testnet activity | 26 jobs settled by our own agents on the v2 testnet deployment (20 approved, 4 rejected, 2 expired). Not outside usage. See `docs/testnet-activity.md` |
 | Frontend | Runs locally. The board shows only data read from Arc. On testnet you can open jobs, fund, submit, decide, challenge and withdraw from the UI |
 

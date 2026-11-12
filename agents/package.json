@@ -10,7 +10,8 @@
     "testnet:keys": "bun src/testnet-keys.ts",
     "demo:testnet": "bun --env-file=.env.testnet src/testnet.ts",
     "loop:testnet": "bun --env-file=.env.testnet src/loop.ts",
-    "cctp:testnet": "bun --env-file=.env.testnet src/cctp-testnet.ts"
+    "cctp:testnet": "bun --env-file=.env.testnet src/cctp-testnet.ts",
+    "cctp:finish": "bun --env-file=.env.testnet src/cctp-finish.ts"
   },
   "dependencies": {
     "viem": "2.57.5"

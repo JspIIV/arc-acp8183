@@ -32,9 +32,12 @@ const D: Deployment = {
 const IDENTITY: Address = "0x8004A818BFB912233c491871b3d84c89A494BD9e";
 const REPUTATION: Address = "0x8004B663056A597Dffe9eCcC1965A193B7388713";
 
-const BUDGET = parseUnits("1", 6);
-const BOND = parseUnits("1", 6);          // the hook needs 50% of a budget free; 1 USDC covers two jobs
-const MIN_BALANCE = { client: parseUnits("2", 6), provider: parseUnits("2", 6), evaluator: parseUnits("0.5", 6) };
+const GAS_ALLOWANCE = parseUnits("0.2", 6);
+const BUDGET = parseUnits("0.5", 6);
+const BOND = parseUnits("0.5", 6);        // the hook locks 50% of a budget per job; the bond is freed after each job
+const GAS_MARGIN = parseUnits("0.3", 6);  // gas on Arc is paid in USDC
+// The client funds scenario A, then scenario B before B's refund comes back.
+const MIN_BALANCE = { client: BUDGET * 2n + GAS_MARGIN, provider: GAS_MARGIN, evaluator: GAS_MARGIN };
 
 const usdc = (v: bigint) => `${formatUnits(v, 6)} USDC`;
 const link = (tx: Hex) => `${arcTestnet.blockExplorers.default.url}/tx/${tx}`;
@@ -80,7 +83,13 @@ async function main(): Promise<void> {
   const rejectIsProposal = window > 0n && arbiters.some((a) => !parties.has(a.toLowerCase()));
   console.log(`a rejection here will be ${rejectIsProposal ? `a proposal (provider may challenge for ${window}s)` : "final at once (disputes off or no eligible arbiter)"}`);
 
-  const need: Array<[Agent, bigint]> = [[client, MIN_BALANCE.client], [provider, MIN_BALANCE.provider], [evaluator, MIN_BALANCE.evaluator]];
+  const freeBond = await read<bigint>(D.hook, BOND_ABI, "freeBond", [provider.address]);
+  const needsBond = freeBond < BUDGET / 2n;
+  const need: Array<[Agent, bigint]> = [
+    [client, MIN_BALANCE.client],
+    [provider, MIN_BALANCE.provider + (needsBond ? BOND : 0n)],
+    [evaluator, MIN_BALANCE.evaluator],
+  ];
   const short = [];
   for (const [a, min] of need) {
     const have = await balance(a.address);
@@ -99,11 +108,10 @@ async function main(): Promise<void> {
 
   // ------------------------------------------------------------------ Provider setup
   console.log("\n== Provider: bond and ERC-8004 identity");
-  const free = await read<bigint>(D.hook, BOND_ABI, "freeBond", [provider.address]);
-  if (free < BUDGET) {
+  if (needsBond) {
     await providerRole.stakeBond(BOND);
     console.log(`staked ${usdc(BOND)} bond`);
-  } else console.log(`free bond already ${usdc(free)}`);
+  } else console.log(`free bond already ${usdc(freeBond)}`);
   const agentId = await providerRole.ensureAgentId(IDENTITY, "https://github.com/JspIIV/arc-acp8183");
   console.log(`agentId ${agentId} linked to the bond hook`);
 
@@ -112,7 +120,7 @@ async function main(): Promise<void> {
     return { count, value };
   };
   const repBefore = await summary();
-  console.log(`reputation before: ${repBefore.count} entries, sum ${repBefore.value}`);
+  console.log(`reputation before: ${repBefore.count} entries, average ${repBefore.value}`);
 
   const feedbackIn = (res: ReviewResult) => ({
     feedback: parseEventLogs({ abi: REPUTATION_ABI, eventName: "NewFeedback", logs: res.logs }),
@@ -122,7 +130,8 @@ async function main(): Promise<void> {
 
   // ------------------------------------------------------------------ Scenario A
   console.log("\n== Scenario A: good work is approved and paid");
-  const before = { provider: await balance(provider.address), evaluator: await balance(evaluator.address) };
+  const owedOf = (a: Address) => read<bigint>(D.acp, ACP_ABI, "owed", [a]);
+  const owedBefore = { provider: await owedOf(provider.address), evaluator: await owedOf(evaluator.address), treasury: await owedOf(treasury) };
   const jobA = await clientRole.createJob(provider.address, evaluator.address, "Summarise the Arc docs", 86_400n);
   await providerRole.setBudget(jobA, BUDGET);
   await clientRole.fund(jobA, evaluator.address);
@@ -135,25 +144,36 @@ async function main(): Promise<void> {
   assert(repA.skipped.length === 0 && repA.failed.length === 0, "no reputation skip or failure event");
   assert(repA.feedback.length === 1, "one NewFeedback event in the settlement transaction");
   const afterA = await summary();
-  console.log(`reputation: ${afterA.count} entries, sum ${afterA.value} (was ${repBefore.count} / ${repBefore.value})`);
+  console.log(`reputation: ${afterA.count} entries, average ${afterA.value} (was ${repBefore.count} / ${repBefore.value})`);
   assert(afterA.count === repBefore.count + 1n, "reputation entry count went up by one");
 
-  await provider.write(D.acp, ACP_ABI, "withdraw");
-  await evaluator.write(D.acp, ACP_ABI, "withdraw");
   const platform = (BUDGET * platformBps) / 10_000n;
   const evalFee = (BUDGET * evaluatorBps) / 10_000n;
-  const gotProvider = (await balance(provider.address)) - before.provider;
-  const gotEvaluator = (await balance(evaluator.address)) - before.evaluator;
-  console.log(`provider +${usdc(gotProvider)}, evaluator +${usdc(gotEvaluator)}, treasury credited ${usdc(platform)} (${treasury})`);
-  assert(gotProvider === BUDGET - platform - evalFee, "provider payout");
-  assert(gotEvaluator === evalFee, "evaluator fee");
+  const creditedProvider = (await owedOf(provider.address)) - owedBefore.provider;
+  const creditedEvaluator = (await owedOf(evaluator.address)) - owedBefore.evaluator;
+  const creditedTreasury = (await owedOf(treasury)) - owedBefore.treasury;
+  console.log(`credited in the contract: provider ${usdc(creditedProvider)}, evaluator ${usdc(creditedEvaluator)}, treasury ${usdc(creditedTreasury)} (${treasury})`);
+  assert(creditedProvider === BUDGET - platform - evalFee, "provider credit");
+  assert(creditedEvaluator === evalFee, "evaluator fee credit");
+  assert(creditedTreasury === platform, "treasury fee credit");
+
+  // Gas on Arc is paid in USDC, so a wallet's balance rises by the payout minus the withdraw's own gas.
+  const walletBefore = { provider: await balance(provider.address), evaluator: await balance(evaluator.address) };
+  await provider.write(D.acp, ACP_ABI, "withdraw");
+  await evaluator.write(D.acp, ACP_ABI, "withdraw");
+  const gotProvider = (await balance(provider.address)) - walletBefore.provider;
+  const gotEvaluator = (await balance(evaluator.address)) - walletBefore.evaluator;
+  console.log(`withdrawn: provider +${usdc(gotProvider)}, evaluator +${usdc(gotEvaluator)} (after paying gas in USDC)`);
+  assert(gotProvider <= creditedProvider && gotProvider > creditedProvider - GAS_ALLOWANCE, "provider received the payout minus gas");
+  assert(gotEvaluator <= creditedEvaluator && gotEvaluator > creditedEvaluator - GAS_ALLOWANCE, "evaluator received the fee minus gas");
 
   // ------------------------------------------------------------------ Scenario B
   if (skipReject) {
     console.log("\nSkipping scenario B (--skip-reject).");
   } else {
     console.log("\n== Scenario B: bad work is rejected, client is refunded, bond is slashed");
-    const clientBefore = await balance(client.address);
+    const slashOwedOf = (a: Address) => read<bigint>(D.hook, BOND_ABI, "slashOwed", [a]);
+    const owedClientBefore = await owedOf(client.address), slashBefore = await slashOwedOf(client.address);
     const jobB = await clientRole.createJob(provider.address, evaluator.address, "Summarise the Arc docs", 86_400n);
     await providerRole.setBudget(jobB, BUDGET);
     await clientRole.fund(jobB, evaluator.address);
@@ -178,13 +198,19 @@ async function main(): Promise<void> {
     }
     assert(status === "Rejected", "job B ends Rejected");
 
+    const refund = (await owedOf(client.address)) - owedClientBefore;
+    const slashed = (await slashOwedOf(client.address)) - slashBefore;
+    console.log(`credited to the client: refund ${usdc(refund)}, slashed bond ${usdc(slashed)}`);
+    assert(refund === BUDGET, "client is owed the full budget");
+    assert(slashed === BUDGET / 2n, "client is owed half the budget as slashed bond");
+    const clientWallet = await balance(client.address);
     await client.write(D.acp, ACP_ABI, "withdraw");
     await client.write(D.hook, BOND_ABI, "withdrawSlash");
-    const gain = (await balance(client.address)) - clientBefore;
-    console.log(`client net change ${usdc(gain)} (budget refunded plus ${usdc(BUDGET / 2n)} slashed bond)`);
-    assert(gain === BUDGET / 2n, "client keeps the slashed bond and gets the budget back");
+    const gain = (await balance(client.address)) - clientWallet;
+    console.log(`withdrawn: client +${usdc(gain)} (after paying gas in USDC)`);
+    assert(gain <= refund + slashed && gain > refund + slashed - GAS_ALLOWANCE, "client received refund and slashed bond minus gas");
     const afterB = await summary();
-    console.log(`reputation: ${afterB.count} entries, sum ${afterB.value}`);
+    console.log(`reputation: ${afterB.count} entries, average ${afterB.value}`);
   }
   console.log("\nAll checks passed.");
 }

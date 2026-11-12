@@ -57,6 +57,20 @@ What it does beyond the local demo:
 
 Keep `.env.testnet` out of git. It holds private keys.
 
+### A recorded run (Nov 12, 2026)
+
+Three agents with fresh keys, 0.5 USDC budgets, the v2 testnet deployment, provider agentId 897857.
+
+| Step | Result | Transaction |
+|---|---|---|
+| Job 5, good work | Approved. Provider credited 0.485 USDC, evaluator 0.005, treasury 0.01. One `NewFeedback` (+1) in the same transaction, no `ReputationSkipped` | [0x5af44d8b...](https://explorer.testnet.arc.io/tx/0x5af44d8bfa168ad6b07db758f08cc4e49fd96845c1881ff5c528256a775d4ffd) |
+| Job 6, bad work | Rejected as a proposal | [0x67b32c89...](https://explorer.testnet.arc.io/tx/0x67b32c8949cffa89cd6a12dae892bd36aeb23fd7b7e842246846b3bb38e8c48c) |
+| Job 6, after the 600 s window | Finalized by the client. Client credited the 0.5 USDC budget plus 0.25 USDC slashed bond | [0xb36b05a1...](https://explorer.testnet.arc.io/tx/0xb36b05a12def95d5d1966c603338c6eb8e5e848cac476a93f52a91a8c29e1bc4) |
+
+The reputation registry showed 3 entries for the provider after the run (two approvals and one
+rejection). The summary value is an average, so it prints as a whole number. An earlier run
+(job 4) is not in the table: it stopped on an over-strict balance check in the script, which is fixed.
+
 ## Using a Circle Agent Wallet instead of a local key
 
 Circle Agent Wallets support Arc and can run any contract write with `circle wallet execute`
